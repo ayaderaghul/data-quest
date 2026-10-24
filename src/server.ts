@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { migrate, pool, tx } from "./db.js";
 import { authRateLimit, login, logout, register, registrationOpen, requireAuth, type AuthedRequest } from "./auth.js";
 import { CHAPTERS, REGIONS, RIVALS } from "./content/index.js";
-import { getDailyEvent, placeName, searchPlaces, setLocation, TELEPORT_COST, WEATHER_INFO } from "./game/weather.js";
+import { checkSources, getDailyEvent, placeName, searchPlaces, setLocation, TELEPORT_COST, WEATHER_INFO } from "./game/weather.js";
 import { moonView, solveFairy } from "./game/moonEvents.js";
 import { ITEMS, chapterSummary, heroSummary, loadState, studiedBlocks } from "./game/state.js";
 import { GameError, HINT_COST, answerRun, createRun, serveRun, useHint } from "./game/runs.js";
@@ -118,11 +118,21 @@ app.post("/api/location", wrap(async (req, res) => {
       const next = await setLocation(c, req.userId!, tz, la, lo, place, isTeleport);
       return { weather: { ...next, ...WEATHER_INFO[next.weather] }, cost };
     } catch (err) {
-      if (err instanceof Error && err.message === "WEATHER_DOWN") throw new GameError(503, "The weather spirits aren't answering. Try again in a moment.");
+      if (err instanceof Error && err.message.startsWith("WEATHER_DOWN")) {
+        throw new GameError(503, `The weather spirits aren't answering (${err.message.slice(14)}). Try again in a moment.`);
+      }
       throw err;
     }
   });
   res.json(out);
+}));
+
+// Diagnostics: asks every weather source for your current spot and reports what each said.
+app.get("/api/weather/check", wrap(async (req, res) => {
+  const u = await pool.query("SELECT lat, lon, place FROM users WHERE id = $1", [req.userId!]);
+  const { lat, lon, place } = u.rows[0];
+  const la = lat ?? 45.672, lo = lon ?? 11.927;
+  res.json({ place: lat === null ? "Castelfranco Veneto (default)" : place, attempts: await checkSources(la, lo) });
 }));
 
 // ---------- moon ----------
@@ -253,8 +263,12 @@ app.use("/api", (_req, res) => res.status(404).json({ error: "Not found." }));
 // ---------- static frontend ----------
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, "..", "public");
-app.use(express.static(publicDir, { maxAge: "1h", index: "index.html" }));
-app.get("*", (_req, res) => res.sendFile(path.join(publicDir, "index.html")));
+// no-cache = the browser revalidates (cheap 304 via ETag), so a new deploy reaches phones straight away.
+app.use(express.static(publicDir, { index: "index.html", setHeaders: (res) => res.setHeader("Cache-Control", "no-cache") }));
+app.get("*", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(publicDir, "index.html"));
+});
 
 app.use((err: unknown, _req: AuthedRequest, res: Response, _next: NextFunction) => {
   if (err instanceof GameError) return res.status(err.status).json({ error: err.message });

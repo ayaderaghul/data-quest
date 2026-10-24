@@ -304,7 +304,8 @@ async function screenMap() {
           <div class="label" style="color:var(--gem-f)">TODAY'S WEATHER EVENT</div>
           <div style="font-size:22px;margin-top:4px">${esc(w.label)}${w.temp !== null ? ` · ${Math.round(w.temp)}°C` : ""} · ${esc(w.place)}</div>
           <div class="small" style="color:#c9d6ff">${esc(w.effect)}</div>
-          ${w.live ? "" : `<div class="tiny muted">Couldn't reach the weather service, so it's a plain cloudy day for now.</div>`}
+          ${w.live ? (w.source ? `<div class="tiny muted">via ${w.source === "met.no" ? "MET Norway" : w.source === "open-meteo" ? "Open-Meteo" : esc(w.source)}</div>` : "")
+            : `<div class="tiny muted">No weather source answered, so it's a plain cloudy day for now. ${w.error ? esc(w.error) : ""} <a href="#/travel">Check the sky</a></div>`}
         </div>
         <a href="#/travel" class="btn ghost small" style="min-height:44px;padding:4px 8px" aria-label="Teleport to another city">✈</a>
       </div>`}
@@ -346,6 +347,8 @@ async function screenTravel() {
         ${w.needsLocation ? "" : `<div class="small muted">${esc(w.label)}${w.temp !== null ? ` · ${Math.round(w.temp)}°C` : ""}</div>`}</div></div>
       <button class="btn cyan" id="gps">⌖ USE MY REAL LOCATION (FREE)</button>
       <p class="small muted" style="margin:0">Teleport to any city to play under its sky. ${freeLeft ? "Your first teleport today is free." : `Another teleport today costs ${d.teleportCost} gold.`} Storm and snow challenges stay once per day wherever you go.</p>
+      <div class="card col gap-s"><div class="row"><span class="label grow">SKY CHECK</span><button class="btn ghost small" id="check" style="min-height:40px">ASK THE SOURCES</button></div>
+        <div id="checkOut" class="small muted">See what each weather source answers right now.</div></div>
       <form id="search" class="row" role="search">
         <div class="field grow"><label for="city" class="sr-only">City</label><input id="city" placeholder="Search a city: Hanoi, Oslo, Venezia..." autocomplete="off"></div>
         <button class="btn small" type="submit" style="min-width:64px">GO</button>
@@ -353,6 +356,14 @@ async function screenTravel() {
       <div class="list" id="results"></div>
     </div>${nav("map")}</main>`;
   document.getElementById("gps").addEventListener("click", useMyLocation);
+  document.getElementById("check").addEventListener("click", async () => {
+    const out = document.getElementById("checkOut");
+    out.innerHTML = `<span class="pulse">Asking the sky...</span>`;
+    try {
+      const r = await api("/api/weather/check");
+      out.innerHTML = `<div>${esc(r.place)}</div>` + r.attempts.map((a) => `<div><span style="color:${a.ok ? "var(--green)" : "var(--red)"}">${a.ok ? "✓" : "✗"}</span> ${esc(a.source)} · ${a.status ?? "no response"} · ${a.ms}ms · ${esc(a.detail)}</div>`).join("");
+    } catch (err) { out.textContent = err.message; }
+  });
   document.getElementById("search").addEventListener("submit", async (e) => {
     e.preventDefault();
     const q = document.getElementById("city").value.trim();

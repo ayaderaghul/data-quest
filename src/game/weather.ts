@@ -30,22 +30,52 @@ const UA = "data-quest/1.0 (github.com/ayaderaghul/data-quest)";
 
 type Reading = { weather: Weather; code: number | null; temp: number | null; source: string };
 
-/** Primary source: Open-Meteo (WMO codes). Shared hosting IPs can hit its rate limit. */
-async function fromOpenMeteo(lat: number, lon: number): Promise<Reading | null> {
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}&current=temperature_2m,weather_code`;
+export interface Attempt {
+  source: string;
+  ok: boolean;
+  status: number | null; // HTTP status, null if the request never got a response
+  ms: number;
+  detail: string; // what came back, or why it failed
+}
+
+/**
+ * Every forecast call goes through here and is logged as one line, e.g.
+ * [weather] open-meteo 429 312ms lat=45.7 lon=11.9 FAIL "Too many requests"
+ * Coordinates are rounded to ~10 km so the logs don't pinpoint anyone.
+ */
+async function call(source: string, url: string, lat: number, lon: number, parse: (data: any) => Reading | null, headers: Record<string, string> = {}): Promise<{ reading: Reading | null; attempt: Attempt }> {
+  const t0 = Date.now();
+  let status: number | null = null;
+  let reading: Reading | null = null;
+  let detail = "";
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    const res = await fetch(url, { headers: { "User-Agent": UA, ...headers }, signal: AbortSignal.timeout(5000) });
+    status = res.status;
+    const text = await res.text();
     if (!res.ok) {
-      console.warn(`open-meteo forecast: HTTP ${res.status}`);
-      return null;
+      detail = text.slice(0, 160).replace(/\s+/g, " ");
+    } else {
+      reading = parse(JSON.parse(text));
+      detail = reading ? `${reading.weather}${reading.temp !== null ? ` ${Math.round(reading.temp)}°C` : ""}` : `unexpected body: ${text.slice(0, 120)}`;
     }
-    const data = (await res.json()) as { current?: { temperature_2m?: number; weather_code?: number } };
-    if (typeof data.current?.weather_code !== "number") return null;
-    return { weather: weatherFromCode(data.current.weather_code), code: data.current.weather_code, temp: data.current.temperature_2m ?? null, source: "open-meteo" };
   } catch (err) {
-    console.warn("open-meteo forecast failed:", (err as Error).message);
-    return null;
+    const e = err as Error & { cause?: { code?: string } };
+    detail = e.name === "TimeoutError" ? "timed out after 5s" : `${e.message}${e.cause?.code ? ` (${e.cause.code})` : ""}`;
   }
+  const attempt = { source, ok: !!reading, status, ms: Date.now() - t0, detail };
+  console.log(`[weather] ${source} ${status ?? "---"} ${attempt.ms}ms lat=${lat.toFixed(1)} lon=${lon.toFixed(1)} ${attempt.ok ? "OK" : "FAIL"} ${JSON.stringify(detail)}`);
+  return { reading, attempt };
+}
+
+/** Primary source: Open-Meteo (WMO codes). Shared hosting IPs can hit its rate limit. */
+function fromOpenMeteo(lat: number, lon: number) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}&current=temperature_2m,weather_code`;
+  return call("open-meteo", url, lat, lon, (data) => {
+    const code = data?.current?.weather_code;
+    if (typeof code !== "number") return null;
+    const temp = data.current.temperature_2m;
+    return { weather: weatherFromCode(code), code, temp: typeof temp === "number" ? temp : null, source: "open-meteo" };
+  });
 }
 
 /** MET Norway symbol codes, e.g. "lightrainshowers_day", "heavysnowandthunder", "fog". */
@@ -59,30 +89,29 @@ export function weatherFromSymbol(symbol: string): Weather {
   return "cloudy";
 }
 
-/** Fallback source: MET Norway Locationforecast (global coverage). */
-async function fromMetNo(lat: number, lon: number): Promise<Reading | null> {
-  // MET asks for at most 4 decimals in coordinates.
+/** Fallback source: MET Norway Locationforecast (global coverage; needs a real User-Agent). */
+function fromMetNo(lat: number, lon: number) {
   const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
-  try {
-    const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(5000) });
-    if (!res.ok) {
-      console.warn(`met.no forecast: HTTP ${res.status}`);
-      return null;
-    }
-    const data = (await res.json()) as any;
+  return call("met.no", url, lat, lon, (data) => {
     const first = data?.properties?.timeseries?.[0]?.data;
     const symbol: string | undefined = first?.next_1_hours?.summary?.symbol_code ?? first?.next_6_hours?.summary?.symbol_code;
     if (!symbol) return null;
     const temp = first?.instant?.details?.air_temperature;
     return { weather: weatherFromSymbol(symbol), code: null, temp: typeof temp === "number" ? temp : null, source: "met.no" };
-  } catch (err) {
-    console.warn("met.no forecast failed:", (err as Error).message);
-    return null;
-  }
+  });
 }
 
-async function fetchCurrent(lat: number, lon: number): Promise<Reading | null> {
-  return (await fromOpenMeteo(lat, lon)) ?? (await fromMetNo(lat, lon));
+async function fetchCurrent(lat: number, lon: number): Promise<{ reading: Reading | null; attempts: Attempt[] }> {
+  const a = await fromOpenMeteo(lat, lon);
+  if (a.reading) return { reading: a.reading, attempts: [a.attempt] };
+  const b = await fromMetNo(lat, lon);
+  return { reading: b.reading, attempts: [a.attempt, b.attempt] };
+}
+
+/** Diagnostics: asks every source, even if the first one works. */
+export async function checkSources(lat: number, lon: number): Promise<Attempt[]> {
+  const [a, b] = await Promise.all([fromOpenMeteo(lat, lon), fromMetNo(lat, lon)]);
+  return [a.attempt, b.attempt];
 }
 
 type Place = { name: string; region: string; country: string; lat: number; lon: number };
@@ -160,13 +189,18 @@ export interface DailyEvent {
   teleports: number;
   live: boolean;
   needsLocation: boolean;
+  source?: string;
+  error?: string;
 }
 
-async function lookup(lat: number, lon: number): Promise<Reading | null> {
+async function lookup(lat: number, lon: number): Promise<{ reading: Reading | null; attempts: Attempt[] }> {
   const override = process.env.NODE_ENV !== "production" ? process.env.DEV_WEATHER : undefined;
-  if (override && override in WEATHER_INFO) return { weather: override as Weather, code: null, temp: null, source: "dev" };
+  if (override && override in WEATHER_INFO) return { reading: { weather: override as Weather, code: null, temp: null, source: "dev" }, attempts: [] };
   return fetchCurrent(lat, lon);
 }
+
+const summarise = (attempts: Attempt[]) =>
+  attempts.map((a) => `${a.source}: ${a.status ? `HTTP ${a.status}` : "no response"}${a.detail ? ` (${a.detail.slice(0, 60)})` : ""}`).join(" · ");
 
 /**
  * The day's weather is fetched once for your location and then locked,
@@ -182,15 +216,15 @@ export async function getDailyEvent(db: Db, userId: number, tz: string): Promise
   if (lat === null || lon === null) {
     return { day, weather: "cloudy", temp: null, place: "", challengeStatus: "none", encounters: 0, teleports: 0, live: false, needsLocation: true };
   }
-  const w = await lookup(lat, lon);
+  const { reading: w, attempts } = await lookup(lat, lon);
   if (!w) {
-    // Don't lock in a fake weather for the day if the API is down.
-    return { day, weather: "cloudy", temp: null, place, challengeStatus: "none", encounters: 0, teleports: 0, live: false, needsLocation: false };
+    // Don't lock in a fake weather for the day if every source is down; the next visit tries again.
+    return { day, weather: "cloudy", temp: null, place, challengeStatus: "none", encounters: 0, teleports: 0, live: false, needsLocation: false, error: summarise(attempts) };
   }
   const ins = await db.query(
-    `INSERT INTO daily_events (user_id, day, weather, code, temp, place) VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO daily_events (user_id, day, weather, code, temp, place, source) VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (user_id, day) DO UPDATE SET user_id = EXCLUDED.user_id RETURNING *`,
-    [userId, day, w.weather, w.code, w.temp, place],
+    [userId, day, w.weather, w.code, w.temp, place, w.source],
   );
   return toEvent(ins.rows[0]);
 }
@@ -202,16 +236,16 @@ export async function getDailyEvent(db: Db, userId: number, tz: string): Promise
 export async function setLocation(
   db: Db, userId: number, tz: string, lat: number, lon: number, place: string, isTeleport: boolean,
 ): Promise<DailyEvent> {
-  const w = await lookup(lat, lon);
-  if (!w) throw new Error("WEATHER_DOWN");
+  const { reading: w, attempts } = await lookup(lat, lon);
+  if (!w) throw new Error(`WEATHER_DOWN: ${summarise(attempts)}`);
   await db.query("UPDATE users SET lat = $2, lon = $3, place = $4 WHERE id = $1", [userId, lat, lon, place]);
   const day = localDay(tz);
   const row = await db.query(
-    `INSERT INTO daily_events (user_id, day, weather, code, temp, place, teleports) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO daily_events (user_id, day, weather, code, temp, place, teleports, source) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (user_id, day) DO UPDATE SET weather = EXCLUDED.weather, code = EXCLUDED.code, temp = EXCLUDED.temp,
-       place = EXCLUDED.place, teleports = daily_events.teleports + EXCLUDED.teleports
+       place = EXCLUDED.place, teleports = daily_events.teleports + EXCLUDED.teleports, source = EXCLUDED.source
      RETURNING *`,
-    [userId, day, w.weather, w.code, w.temp, place, isTeleport ? 1 : 0],
+    [userId, day, w.weather, w.code, w.temp, place, isTeleport ? 1 : 0, w.source],
   );
   return toEvent(row.rows[0]);
 }
@@ -225,6 +259,7 @@ function toEvent(row: any): DailyEvent {
     challengeStatus: row.challenge_status,
     encounters: row.encounters,
     teleports: row.teleports ?? 0,
+    source: row.source ?? undefined,
     live: true,
     needsLocation: false,
   };
