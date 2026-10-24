@@ -1,0 +1,28 @@
+{
+  "name": "data-quest",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An 8-bit RPG for studying Designing Data-Intensive Applications",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "check": "node dist/scripts/check-content.js",
+    "invite": "node dist/scripts/invite.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.2"
+  }
+}
