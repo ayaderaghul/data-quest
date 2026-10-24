@@ -255,7 +255,7 @@ app.get("/api/rivals", wrap(async (req, res) => {
 app.get("/api/leaderboard", wrap(async (req, res) => {
   res.json(await tx(async (c) => {
     const u = await c.query("SELECT tz FROM users WHERE id = $1", [req.userId!]);
-    return leaderboard(c, req.userId!, u.rows[0].tz);
+    return leaderboard(c, req.userId!, u.rows[0].tz, req.query.scope === "all" ? "all" : "week");
   }));
 }));
 

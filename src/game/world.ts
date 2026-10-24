@@ -5,7 +5,7 @@ import {
   ITEMS, blockStatus, blockUnlocked, chapterSummary, chapterUnlocked, emptyReward, grant, loadState, studiedBlocks,
 } from "./state.js";
 import { GameError, progressNotes, saveProgress } from "./runs.js";
-import { levelFor, perm, pick, rand, rankFor, sample, seeded } from "./util.js";
+import { levelFor, localDay, perm, pick, rand, rankFor, sample, seeded } from "./util.js";
 
 // ---------- block & chapter views ----------
 
@@ -141,34 +141,55 @@ export async function rivalRoster(c: pg.PoolClient, userId: number, day: string)
 
 const RIVAL_RANK = (base: number) => (base > 850 ? "King" : base > 750 ? "Duke" : base > 650 ? "Count" : base > 500 ? "Baron" : base > 350 ? "Knight" : "Squire");
 
-export async function leaderboard(c: pg.PoolClient, userId: number, tz: string) {
+const WEEK = 7 * 864e5;
+
+/** Gold that counts on the board: minted at the Royal Mint, plus gold the elves paid you. */
+const EARNED = "kind = 'gold' AND amount > 0 AND reason IN ('mint', 'elf')";
+
+/**
+ * scope "week": this week's gold, resetting Monday 00:00 in your time zone.
+ * scope "all": everything since you joined; rivals have been earning every week since then too.
+ */
+export async function leaderboard(c: pg.PoolClient, userId: number, tz: string, scope: "week" | "all" = "week") {
   const ws = await c.query(
-    "SELECT (date_trunc('week', now() AT TIME ZONE $1) AT TIME ZONE $1) AS start, now() AS now",
-    [tz],
+    `SELECT (date_trunc('week', now() AT TIME ZONE $1) AT TIME ZONE $1) AS start,
+            (date_trunc('week', u.created_at AT TIME ZONE $1) AT TIME ZONE $1) AS joined_week,
+            now() AS now, u.username, u.xp
+     FROM users u WHERE u.id = $2`,
+    [tz, userId],
   );
-  const start: Date = ws.rows[0].start;
-  const now: Date = ws.rows[0].now;
-  const weekKey = start.toISOString().slice(0, 10);
-  const u = await c.query("SELECT username, xp FROM users WHERE id = $1", [userId]);
+  const { start: weekStart, joined_week: joinedWeek, now, username, xp } = ws.rows[0] as {
+    start: Date; joined_week: Date; now: Date; username: string; xp: number;
+  };
+  const from = scope === "all" ? joinedWeek : weekStart;
+
+  // A rival's score for one week, `frac` of the way through it.
+  const rivalWeek = (id: string, base: number, wkStart: Date, frac: number) =>
+    base * frac ** 0.9 * (0.85 + 0.3 * seeded(`${id}:${wkStart.toISOString().slice(0, 10)}`));
 
   async function board(at: Date) {
     const mine = await c.query(
-      "SELECT COALESCE(SUM(amount), 0)::int AS g FROM ledger WHERE user_id = $1 AND kind = 'gold' AND reason = 'mint' AND created_at >= $2 AND created_at <= $3",
-      [userId, start, at],
+      `SELECT COALESCE(SUM(amount), 0)::int AS g FROM ledger WHERE user_id = $1 AND ${EARNED} AND created_at >= $2 AND created_at <= $3`,
+      [userId, from, at],
     );
     const wins = await c.query(
       `SELECT meta->>'rivalId' AS rival, count(*)::int AS n FROM runs
        WHERE user_id = $1 AND kind = 'duel' AND score_you > score_rival AND finished_at >= $2 AND finished_at <= $3 GROUP BY 1`,
-      [userId, start, at],
+      [userId, from, at],
     );
     const winMap = new Map(wins.rows.map((r) => [r.rival, r.n as number]));
-    const frac = Math.max(0, Math.min(1, (at.getTime() - start.getTime()) / (7 * 864e5)));
-    const rows = RIVALS.map((r) => ({
-      id: r.id, name: r.name, title: r.title, rank: RIVAL_RANK(r.weeklyBase), colour: r.colour, you: false,
-      gold: Math.max(0, Math.round(r.weeklyBase * frac ** 0.9 * (0.85 + 0.3 * seeded(`${r.id}:${weekKey}`))) - 100 * (winMap.get(r.id) ?? 0)),
-    }));
-    const level = levelFor(u.rows[0].xp);
-    rows.push({ id: "you", name: u.rows[0].username, title: "", rank: rankFor(level), colour: "#4f7cff", you: true, gold: mine.rows[0].g });
+    const rows = RIVALS.map((r) => {
+      let total = 0;
+      for (let wk = new Date(from); wk.getTime() <= at.getTime(); wk = new Date(wk.getTime() + WEEK)) {
+        const frac = Math.max(0, Math.min(1, (at.getTime() - wk.getTime()) / WEEK));
+        total += rivalWeek(r.id, r.weeklyBase, wk, frac);
+      }
+      return {
+        id: r.id, name: r.name, title: r.title, rank: RIVAL_RANK(r.weeklyBase), colour: r.colour, you: false,
+        gold: Math.max(0, Math.round(total) - 100 * (winMap.get(r.id) ?? 0)),
+      };
+    });
+    rows.push({ id: "you", name: username, title: "", rank: rankFor(levelFor(xp)), colour: "#4f7cff", you: true, gold: mine.rows[0].g });
     rows.sort((a, b) => b.gold - a.gold || (a.you ? -1 : 1));
     return rows;
   }
@@ -177,7 +198,9 @@ export async function leaderboard(c: pg.PoolClient, userId: number, tz: string) 
   const yesterday = await board(new Date(now.getTime() - 864e5));
   const prevPos = new Map(yesterday.map((r, i) => [r.id, i]));
   return {
-    weekStart: weekKey,
+    scope,
+    since: localDay(tz, from),
+    weekStart: localDay(tz, weekStart),
     rows: current.map((r, i) => ({ ...r, pos: i + 1, move: (prevPos.get(r.id) ?? i) - i })),
   };
 }

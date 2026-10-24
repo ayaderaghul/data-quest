@@ -836,6 +836,18 @@ async function screenMint() {
         ${d.weather === "sunny" ? `<div class="card row" style="background:#2a3b1a;justify-content:space-between"><span>☀ sunny-day bonus</span><span style="color:var(--gold)">+10% → +${t.bonus} ●</span></div>` : `<p class="small muted" style="margin:0">Mint on a sunny day for +10% gold.</p>`}
         <div class="row" style="justify-content:space-between;align-items:baseline"><span class="label">YOU RECEIVE</span><span class="pf" style="font-size:16px;color:var(--gold)">${fmt(t.sum)} ●</span></div>
         <button class="btn" id="mint" ${t.sum ? "" : "disabled"}>MINT GOLD ▶</button>
+        <details class="card"><summary class="label" style="cursor:pointer;color:var(--gold)">TIPS FOR THE MOST GOLD</summary>
+          <ul class="small" style="margin:8px 0 0 18px;padding:0;display:flex;flex-direction:column;gap:6px">
+            <li><b>Never skip the card.</b> Fundamental gems are worth 30, triple a quiz gem. Every block gives one fundamental, one scenario and one quiz gem: 60 gold.</li>
+            <li><b>Save gems for a sunny day.</b> Sunny skies add 10%. No sun at home? Your first teleport each day is free, so hop to a sunny city and mint everything there.</li>
+            <li><b>Sell fundamentals to elves.</b> An elf paying 45 gold beats the Mint's 30 (33 on a sunny day). Trading 3 quiz gems (30 gold) for 1 fundamental is only worth it if you then sell it to an elf.</li>
+            <li><b>Refuse bad deals.</b> 60 gold for a scenario gem worth 20 is an elf's trick. Two scenario gems (40) for one fundamental (30) loses gold too.</li>
+            <li><b>Study on rainy days.</b> Each gem you earn has a 20% chance of a bonus gem.</li>
+            <li><b>Quiz in the fog.</b> First-time quiz passes give double quiz gems.</li>
+            <li><b>Never miss the moon.</b> The full-moon wolf pays 3 fundamental gems (90 gold). The new-moon fairy pays 2 scenario gems.</li>
+            <li><b>Take every challenge.</b> Bosses and storm challenges give one of each gem. Duel wins give 2 quiz gems and knock 100 off that rival's score.</li>
+            <li><b>Don't leak gold.</b> Hints cost 20 and extra teleports 25. On the board only earned gold counts, so spending doesn't lower your rank, but it does shrink your purse.</li>
+          </ul></details>
       </div>${nav("hero")}</main>`;
     $app.querySelectorAll(".stepper button").forEach((b) => b.addEventListener("click", () => {
       const k = b.dataset.k;
@@ -853,8 +865,9 @@ async function screenMint() {
   draw();
 }
 
-async function screenBoard() {
-  const d = await api("/api/leaderboard");
+async function screenBoard(scope = "week") {
+  const d = await api(`/api/leaderboard?scope=${scope}`);
+  const all = scope === "all";
   const rows = d.rows;
   const top = rows.slice(0, 3);
   const podiumOrder = [top[1], top[0], top[2]].filter(Boolean);
@@ -867,8 +880,12 @@ async function screenBoard() {
       <div aria-hidden="true" style="position:absolute;right:16px;top:0;width:28px;height:52px;background:var(--gold);border:3px solid var(--bg-deep);border-top:none"></div>
       <div class="label" style="color:#ffd98a">THE GREAT HALL</div>
       <h1 class="pf" style="font-size:14px;margin-top:8px">HALL OF NOBLES</h1>
-      <div class="small" style="color:#ffcfd8;margin-top:6px">gold minted this week · resets Monday 00:00</div>
+      <div class="small" style="color:#ffcfd8;margin-top:6px">${all ? `all gold earned since ${new Date(d.since).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}` : "gold earned this week · resets Monday 00:00"}</div>
     </header>
+    <div class="grid2" style="padding:12px 16px 0">
+      <a class="btn small ${all ? "ghost" : ""}" href="#/board" ${all ? "" : 'aria-current="page"'}>THIS WEEK</a>
+      <a class="btn small ${all ? "" : "ghost"}" href="#/board/all" ${all ? 'aria-current="page"' : ""}>ALL TIME</a>
+    </div>
     <div class="pad col">
       <div class="podium">${podiumOrder.map((r) => `<div class="col gap-s" style="align-items:center">
         ${r.pos === 1 ? svg("0 0 8 4", 28, 14, R(0, 1, 8, 3, "#f7c548") + R(0, 0, 1, 1, "#f7c548") + R(3, 0, 2, 1, "#f7c548") + R(7, 0, 1, 1, "#f7c548") + R(3, 2, 2, 1, "#ff6b8a")) : ""}
@@ -882,8 +899,8 @@ async function screenBoard() {
       ${(() => {
         const me = rows.find((r) => r.you);
         const above = rows[me.pos - 2];
-        return above ? `<div class="card" style="background:#2a3b1a"><span class="label" style="color:#9ff0a8">NEXT TARGET</span><br>${fmt(above.gold - me.gold + 1)} ● more and you pass ${esc(above.name)}. Winning a duel also knocks 100 off a rival's score.</div>`
-          : `<div class="card" style="background:#2a3b1a"><span class="label" style="color:#9ff0a8">TOP OF THE HALL</span><br>You lead the realm this week!</div>`;
+        return above ? `<div class="card" style="background:#2a3b1a"><span class="label" style="color:#9ff0a8">NEXT TARGET</span><br>${fmt(above.gold - me.gold + 1)} ● more and you pass ${esc(above.name)}${all ? " for good" : " this week"}. Winning a duel also knocks 100 off a rival's score. <a href="#/mint">Minting tips</a></div>`
+          : `<div class="card" style="background:#2a3b1a"><span class="label" style="color:#9ff0a8">TOP OF THE HALL</span><br>You lead the realm${all ? " of all time" : " this week"}!</div>`;
       })()}
     </div>${nav("board")}</main>`;
 }
@@ -958,7 +975,7 @@ async function route() {
       case "r": return await screenRun(parts[1]);
       case "hero": return await screenHero();
       case "mint": return await screenMint();
-      case "board": return await screenBoard();
+      case "board": return await screenBoard(parts[1] === "all" ? "all" : "week");
       case "rivals": return await screenRivals();
       case "enc": return await screenEncounter();
       case "travel": return await screenTravel();
