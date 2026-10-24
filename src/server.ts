@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { migrate, pool, tx } from "./db.js";
 import { authRateLimit, login, logout, register, registrationOpen, requireAuth, type AuthedRequest } from "./auth.js";
 import { CHAPTERS, REGIONS, RIVALS } from "./content/index.js";
-import { getDailyEvent, WEATHER_INFO } from "./game/weather.js";
+import { getDailyEvent, placeName, searchPlaces, setLocation, TELEPORT_COST, WEATHER_INFO } from "./game/weather.js";
+import { moonView, solveFairy } from "./game/moonEvents.js";
 import { ITEMS, chapterSummary, heroSummary, loadState, studiedBlocks } from "./game/state.js";
 import { GameError, HINT_COST, answerRun, createRun, serveRun, useHint } from "./game/runs.js";
 import {
@@ -60,12 +61,10 @@ async function today(c: pg.PoolClient, userId: number) {
 
 app.get("/api/state", wrap(async (req, res) => {
   const userId = req.userId!;
-  const lat = req.query.lat !== undefined ? Number(req.query.lat) : undefined;
-  const lon = req.query.lon !== undefined ? Number(req.query.lon) : undefined;
   const tz = safeTz(typeof req.query.tz === "string" ? req.query.tz : undefined);
   const out = await tx(async (c) => {
     await c.query("UPDATE users SET tz = $2 WHERE id = $1", [userId, tz]);
-    const ev = await getDailyEvent(c, userId, tz, lat, lon);
+    const ev = await getDailyEvent(c, userId, tz);
     const encounter = await maybeSpawn(c, userId, ev);
     const s = await loadState(c, userId);
     const studied = studiedBlocks(s).length;
@@ -78,11 +77,64 @@ app.get("/api/state", wrap(async (req, res) => {
       regions: REGIONS,
       chapters: chapterSummary(s),
       encounter,
-      challenge,
+      challenge: ev.needsLocation ? null : challenge,
       equipped: [...s.inventory],
+      moon: await moonView(c, userId),
     };
   });
   res.json(out);
+}));
+
+// ---------- location & teleport ----------
+app.get("/api/geo", wrap(async (req, res) => {
+  const q = String(req.query.q ?? "").trim();
+  if (q.length < 2 || q.length > 60) return res.json({ results: [] });
+  res.json({ results: await searchPlaces(q) });
+}));
+
+app.post("/api/location", wrap(async (req, res) => {
+  const { lat, lon, name, mode } = req.body ?? {};
+  const la = Number(lat), lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) {
+    throw new GameError(400, "That place isn't on any map.");
+  }
+  const isTeleport = mode === "teleport";
+  const place = isTeleport
+    ? String(name ?? "").replace(/[<>]/g, "").trim().slice(0, 60) || "Somewhere"
+    : (await placeName(la, lo)) ?? (Math.abs(la - 45.672) < 0.15 && Math.abs(lo - 11.927) < 0.15 ? "Castelfranco Veneto" : "Your location");
+  const out = await tx(async (c) => {
+    const u = await c.query("SELECT tz, lat FROM users WHERE id = $1 FOR UPDATE", [req.userId!]);
+    const tz = u.rows[0].tz;
+    const ev = await getDailyEvent(c, req.userId!, tz);
+    // The first teleport each day is free; after that it costs gold. Using your real location is always free.
+    let cost = 0;
+    if (isTeleport && u.rows[0].lat !== null && ev.teleports >= 1) cost = TELEPORT_COST;
+    if (cost) {
+      const paid = await c.query("UPDATE users SET gold = gold - $2 WHERE id = $1 AND gold >= $2 RETURNING gold", [req.userId!, cost]);
+      if (!paid.rows[0]) throw new GameError(403, `Another teleport today costs ${cost} gold.`);
+      await c.query("INSERT INTO ledger (user_id, kind, amount, reason) VALUES ($1, 'gold', $2, 'teleport')", [req.userId!, -cost]);
+    }
+    try {
+      const next = await setLocation(c, req.userId!, tz, la, lo, place, isTeleport);
+      return { weather: { ...next, ...WEATHER_INFO[next.weather] }, cost };
+    } catch (err) {
+      if (err instanceof Error && err.message === "WEATHER_DOWN") throw new GameError(503, "The weather spirits aren't answering. Try again in a moment.");
+      throw err;
+    }
+  });
+  res.json(out);
+}));
+
+// ---------- moon ----------
+app.get("/api/moon", wrap(async (req, res) => {
+  res.json(await tx((c) => moonView(c, req.userId!)));
+}));
+
+app.post("/api/fairy", wrap(async (req, res) => {
+  res.json(await tx(async (c) => {
+    const ev = await today(c, req.userId!);
+    return solveFairy(c, req.userId!, req.body?.order, ev.weather);
+  }));
 }));
 
 app.get("/api/chapters/:id", wrap(async (req, res) => {
@@ -166,6 +218,7 @@ app.get("/api/hero", wrap(async (req, res) => {
       mintRates: MINT_RATES,
       hintCost: HINT_COST,
       weather: ev.weather,
+      teleportCost: TELEPORT_COST,
     };
   }));
 }));

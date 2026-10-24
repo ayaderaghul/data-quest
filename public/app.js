@@ -45,15 +45,47 @@ function store(key, val) {
   } catch { return null; }
 }
 
-// Location for the weather: remembered per browser; Castelfranco Veneto by default on the server.
-let geo = store("dq-geo");
-function refreshGeo() {
-  if (!("geolocation" in navigator)) return;
-  navigator.geolocation.getCurrentPosition(
-    (p) => { geo = { lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3) }; store("dq-geo", geo); },
-    () => {},
-    { timeout: 5000, maximumAge: 6 * 3600 * 1000 },
-  );
+// Location is only read when you press "share my location", never silently.
+function askLocation() {
+  return new Promise((resolve, reject) => {
+    if (!("geolocation" in navigator)) return reject(new Error("This browser can't share a location. Choose a city instead."));
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3) }),
+      (err) => reject(new Error(err.code === 1 ? "Location permission was declined. Choose a city instead." : "Couldn't find your location. Choose a city instead.")),
+      { timeout: 10000, maximumAge: 3600 * 1000 },
+    );
+  });
+}
+
+async function useMyLocation() {
+  try {
+    toast("Asking the sky where you are...");
+    const pos = await askLocation();
+    await api("/api/location", { ...pos, mode: "gps" });
+    toast("Weather found!");
+    location.hash = "#/";
+    route();
+  } catch (err) { toast(err.message); }
+}
+
+// ---------- moon ----------
+const SYNODIC = 29.530588853;
+const KNOWN_NEW = Date.UTC(2000, 0, 6, 18, 14);
+const moonFraction = (t) => ((((t - KNOWN_NEW) / 864e5) % SYNODIC + SYNODIC) % SYNODIC) / SYNODIC;
+function moonIcon(fraction, size = 24) {
+  let s = "";
+  const n = 12, r = 5.5, c = 5.5;
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const dx = (x - c) / r, dy = (y - c) / r;
+      if (dx * dx + dy * dy > 1) continue;
+      const w = Math.sqrt(1 - dy * dy);
+      const t = w * Math.cos(2 * Math.PI * fraction);
+      const lit = fraction < 0.5 ? dx > t : dx < -t;
+      s += R(x, y, 1, 1, lit ? "#f4f1de" : "#3d3d7a");
+    }
+  }
+  return svg("0 0 12 12", size, size, s);
 }
 
 // ---------- pixel art ----------
@@ -79,6 +111,7 @@ function heroSvg(items, rank, size = 84) {
   const tunic = rank === "Peasant" ? "#8a6a4a" : rank === "Squire" ? "#4f7cff" : "#3b5bd6";
   let s = "";
   if (has("royal-cape")) s += R(2, 5, 8, 9, "#b0413e");
+  else if (has("wolf-pelt")) s += R(2, 5, 8, 7, "#9aa3b8");
   if (has("gear-1")) s += R(3, 1, 6, 4, "#c0c7d6") + R(4, 3, 4, 1, "#14142e");
   else s += R(4, 1, 4, 4, "#f2c9a0") + R(4, 1, 4, 1, "#5a3a22") + R(5, 3, 1, 1, "#14142e") + R(7, 3, 1, 1, "#14142e");
   if (has("plume")) s += R(5, 0, 3, 1, "#ff6b8a");
@@ -93,6 +126,7 @@ function heroSvg(items, rank, size = 84) {
   s += has("gear-3") ? R(3, 14, 2, 2, "#6b6b9a") + R(7, 14, 2, 2, "#6b6b9a") : R(4, 14, 1, 1, "#3a2a1a") + R(7, 14, 1, 1, "#3a2a1a");
   s += rank === "Peasant" ? R(11, 3, 1, 9, "#8a5a3b") : R(11, 2, 1, 8, "#e8ecf5") + R(10, 9, 2, 1, "#f7c548");
   if (has("lightning-rod")) s += R(0, 2, 1, 9, "#c0c7d6") + R(0, 1, 1, 1, "#f7c548");
+  else if (has("fairy-lantern")) s += R(0, 9, 2, 2, "#f7c548") + R(0, 8, 1, 1, "#c9b8ff");
   return svg("0 0 12 16", size, Math.round(size * 16 / 12), s, `Your ${rank}`);
 }
 
@@ -110,6 +144,16 @@ function mysticSvg(size = 72) {
   return svg("0 0 8 12", size, Math.round(size * 12 / 8),
     R(2, 0, 4, 3, "#6b3fa0") + R(3, 2, 2, 2, "#f2c9a0") + R(1, 4, 6, 8, "#6b3fa0") + R(3, 5, 2, 1, "#f7c548") +
     R(0, 1, 1, 10, "#8a5a3b") + R(0, 0, 1, 1, "#5ee6eb"), "A mystic");
+}
+function wolfSvg(size = 64) {
+  return svg("0 0 14 10", size, Math.round(size * 10 / 14),
+    R(1, 4, 9, 4, "#9aa3b8") + R(9, 2, 4, 4, "#9aa3b8") + R(10, 1, 1, 1, "#9aa3b8") + R(12, 1, 1, 1, "#9aa3b8") + R(11, 3, 1, 1, "#f7c548") +
+    R(13, 4, 1, 1, "#14142e") + R(0, 3, 2, 2, "#c0c7d6") + R(2, 8, 1, 2, "#6b6b9a") + R(8, 8, 1, 2, "#6b6b9a") + R(3, 5, 5, 2, "#c0c7d6"), "A grey wolf");
+}
+function fairySvg(size = 48) {
+  return svg("0 0 10 10", size, size,
+    R(0, 2, 3, 3, "#c9b8ff") + R(7, 2, 3, 3, "#c9b8ff") + R(4, 1, 2, 2, "#f2c9a0") + R(4, 0, 2, 1, "#f7c548") + R(4, 3, 2, 4, "#5ee6eb") +
+    R(4, 7, 1, 2, "#f2c9a0") + R(5, 7, 1, 2, "#f2c9a0") + R(8, 6, 1, 1, "#f7c548") + R(1, 7, 1, 1, "#f7c548"), "A tiny fairy");
 }
 function elfSvg(size = 60) {
   return svg("0 0 8 12", size, Math.round(size * 12 / 8),
@@ -156,7 +200,7 @@ function rewardBox(reward, heading = "REWARDS") {
 const ITEM_NAMES = {
   "gear-1": "Reliability Helm", "gear-2": "Schema Gloves", "gear-3": "B-Tree Boots", "gear-4": "Encoding Belt", "gear-5": "Follower's Pauldrons",
   plume: "Red Plume", "gold-trim": "Gold Trim", "royal-cape": "Royal Cape", "lightning-rod": "Lightning Rod", "frost-scarf": "Frost Scarf",
-  "wyrm-scale": "Wyrm Scale", "mystic-orb": "Mystic Orb", "rival-pennant": "Rival's Pennant",
+  "wyrm-scale": "Wyrm Scale", "mystic-orb": "Mystic Orb", "rival-pennant": "Rival's Pennant", "wolf-pelt": "Wolf Pelt", "fairy-lantern": "Fairy Lantern",
 };
 
 function loading() {
@@ -199,7 +243,6 @@ async function screenLogin() {
 
 async function screenMap() {
   const q = new URLSearchParams({ tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Rome" });
-  if (geo) { q.set("lat", geo.lat); q.set("lon", geo.lon); }
   const st = await api(`/api/state?${q}`);
   const h = st.hero;
   const w = st.weather;
@@ -251,7 +294,11 @@ async function screenMap() {
       </a>
     </header>
     <div class="pad col">
-      <div class="px row" style="background:#23305c;align-items:center">
+      ${w.needsLocation ? `<div class="px col" style="background:#23305c;border-color:var(--gem-f)">
+          <div class="row">${weatherIcon("sunny")}<div class="grow"><div class="label" style="color:var(--gem-f)">WHERE DOES YOUR QUEST BEGIN?</div>
+          <div class="small" style="margin-top:6px">Daily events come from the real sky above you. Share your location, or pick any city in the world.</div></div></div>
+          <div class="grid2"><button class="btn cyan small" id="useGps">SHARE MY LOCATION</button><a class="btn ghost small" href="#/travel">CHOOSE A CITY</a></div></div>`
+      : `<div class="px row" style="background:#23305c;align-items:center">
         ${weatherIcon(w.weather)}
         <div class="grow">
           <div class="label" style="color:var(--gem-f)">TODAY'S WEATHER EVENT</div>
@@ -259,7 +306,9 @@ async function screenMap() {
           <div class="small" style="color:#c9d6ff">${esc(w.effect)}</div>
           ${w.live ? "" : `<div class="tiny muted">Couldn't reach the weather service, so it's a plain cloudy day for now.</div>`}
         </div>
-      </div>
+        <a href="#/travel" class="btn ghost small" style="min-height:44px;padding:4px 8px" aria-label="Teleport to another city">✈</a>
+      </div>`}
+      ${moonCard(st.moon)}
       ${encCard}${chCard}
       <div class="row" style="justify-content:space-between;align-items:baseline"><h2 class="pf" style="font-size:11px">THE REALM</h2>
         <span class="small muted">${st.chapters.filter((c) => c.status === "cleared").length} / 12 chapters cleared</span></div>
@@ -268,6 +317,162 @@ async function screenMap() {
 
   const btn = document.getElementById("startChallenge");
   if (btn) btn.addEventListener("click", () => startRun({ kind: ch.kind }));
+  const gps = document.getElementById("useGps");
+  if (gps) gps.addEventListener("click", useMyLocation);
+}
+
+function moonCard(m) {
+  const mo = m.moon;
+  const date = (iso) => new Date(iso).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  let line = `Next full moon ${date(mo.nextFull)} · new moon ${date(mo.nextNew)}`;
+  let hot = false;
+  if (m.wolf && m.wolf.status === "waiting") { line = "Full moon tonight: a wolf waits in the forest with a shortcut test."; hot = true; }
+  else if (m.wolf) line = `Full moon. The wolf has been met (${m.wolf.status}).`;
+  if (m.fairy && (m.fairy.status === "waiting" || m.fairy.status === "started")) { line = "New moon: a fairy offers a puzzle and an old proverb."; hot = true; }
+  else if (m.fairy) line = `New moon. The fairy has shared her wisdom (${m.fairy.status}).`;
+  return `<a href="#/moon" class="card row${hot ? " pulse" : ""}" style="text-decoration:none;color:var(--ink);background:#1a1a3a;${hot ? "border-color:var(--gold)" : ""}">
+    ${moonIcon(mo.fraction, 36)}<div class="grow"><div class="label" style="color:#c9b8ff">${esc(mo.name.toUpperCase())}</div><div class="small">${esc(line)}</div></div><span class="pf" style="font-size:9px;color:var(--gold)">▶</span></a>`;
+}
+
+async function screenTravel() {
+  const d = await api("/api/hero");
+  const st = await api(`/api/state?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Rome")}`);
+  const w = st.weather;
+  const freeLeft = w.needsLocation || w.teleports === 0;
+  $app.innerHTML = `<main class="screen">
+    ${topbar("#/", "TELEPORT CIRCLE", "WHERE TO, TRAVELLER?", "", "#23305c")}
+    <div class="pad col">
+      <div class="card row">${weatherIcon(w.weather, 36)}<div class="grow"><div class="label">YOU ARE IN</div><div style="font-size:21px">${w.needsLocation ? "Nowhere yet" : esc(w.place)}</div>
+        ${w.needsLocation ? "" : `<div class="small muted">${esc(w.label)}${w.temp !== null ? ` · ${Math.round(w.temp)}°C` : ""}</div>`}</div></div>
+      <button class="btn cyan" id="gps">⌖ USE MY REAL LOCATION (FREE)</button>
+      <p class="small muted" style="margin:0">Teleport to any city to play under its sky. ${freeLeft ? "Your first teleport today is free." : `Another teleport today costs ${d.teleportCost} gold.`} Storm and snow challenges stay once per day wherever you go.</p>
+      <form id="search" class="row" role="search">
+        <div class="field grow"><label for="city" class="sr-only">City</label><input id="city" placeholder="Search a city: Hanoi, Oslo, Venezia..." autocomplete="off"></div>
+        <button class="btn small" type="submit" style="min-width:64px">GO</button>
+      </form>
+      <div class="list" id="results"></div>
+    </div>${nav("map")}</main>`;
+  document.getElementById("gps").addEventListener("click", useMyLocation);
+  document.getElementById("search").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const q = document.getElementById("city").value.trim();
+    if (q.length < 2) return;
+    const box = document.getElementById("results");
+    box.innerHTML = `<div class="small muted pulse">Reading the maps...</div>`;
+    const { results } = await api(`/api/geo?q=${encodeURIComponent(q)}`);
+    if (!results.length) { box.innerHTML = `<div class="small muted">No city by that name in the realm.</div>`; return; }
+    box.innerHTML = results.map((r, i) => `<button class="opt" data-i="${i}">✈ ${esc(r.name)}<span class="small muted">${r.region ? ` · ${esc(r.region)}` : ""}${r.country ? ` · ${esc(r.country)}` : ""}</span></button>`).join("");
+    box.querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
+      const r = results[Number(b.dataset.i)];
+      try {
+        const out = await api("/api/location", { lat: r.lat, lon: r.lon, name: r.name, mode: "teleport" });
+        toast(`Teleported to ${r.name}: ${out.weather.label}${out.cost ? ` (−${out.cost} gold)` : ""}`);
+        location.hash = "#/";
+      } catch (err) { toast(err.message); }
+    }));
+  });
+}
+
+async function screenMoon(offset = 0) {
+  const m = await api("/api/moon");
+  const mo = m.moon;
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+  const daysIn = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const lead = (first.getDay() + 6) % 7; // Monday first
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push(`<div></div>`);
+  for (let d = 1; d <= daysIn; d++) {
+    const t = new Date(first.getFullYear(), first.getMonth(), d, 22).getTime(); // the night sky
+    const f = moonFraction(t);
+    const age = f * SYNODIC;
+    const full = Math.abs(age - SYNODIC / 2) <= 1;
+    const nw = age <= 1 || age >= SYNODIC - 1;
+    const isToday = offset === 0 && d === now.getDate();
+    cells.push(`<div class="center" style="padding:4px 0;border:2px solid ${isToday ? "var(--gold)" : full ? "#9aa3b8" : nw ? "#c9b8ff" : "transparent"};background:${full ? "#2a2a50" : nw ? "#24203f" : "transparent"}">
+      ${moonIcon(f, 22)}<div class="tiny">${d}${full ? " ♞" : nw ? " ✧" : ""}</div></div>`);
+  }
+  const monthName = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const date = (iso) => new Date(iso).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+
+  let event = "";
+  if (m.wolf) {
+    const w = m.wolf;
+    event = `<div class="px col" style="background:#1a1a3a;border-color:#9aa3b8">
+      <div class="row">${wolfSvg(64)}<div class="grow"><div class="label" style="color:#c0c7d6">FULL MOON · THE WOLF</div>
+      <div class="small" style="margin-top:6px">"Forget the details, little one. For each question, show me the <b>shortcut</b> that cracks it: the memory anchor."</div></div></div>
+      <div class="small muted">5 questions from blocks you've studied. Pick the right memory anchor. Win (4/5): 3 fundamental gems, 250 XP, Wolf Pelt. No hints.</div>
+      ${w.status === "waiting" ? (w.ready ? `<button class="btn" id="wolf">FACE THE WOLF ▶</button>` : `<div class="small muted">${esc(w.reason)}</div>`)
+        : `<div class="pf" style="font-size:10px;color:${w.status === "won" ? "var(--green)" : "var(--gold)"}">${w.status === "won" ? "★ THE WOLF RESPECTS YOU" : "THE WOLF HAS GONE. NEXT FULL MOON."}</div>`}</div>`;
+  } else if (m.fairy) {
+    event = fairyPanel(m.fairy);
+  } else {
+    event = `<div class="card small">The forest is quiet. The <b>wolf</b> appears at full moon (${date(mo.nextFull)}). The <b>fairy</b> appears at new moon (${date(mo.nextNew)}).</div>`;
+  }
+
+  $app.innerHTML = `<main class="screen">
+    ${topbar("#/", "THE NIGHT SKY", "MOON CALENDAR", "", "#1a1a3a")}
+    <div class="pad col">
+      <div class="row" style="align-items:center">${moonIcon(mo.fraction, 72)}<div class="grow"><div class="pf" style="font-size:11px;line-height:1.5">${esc(mo.name.toUpperCase())}</div>
+        <div class="small muted">day ${Math.floor(mo.age) + 1} of 29.5</div></div></div>
+      ${event}
+      <div class="row" style="justify-content:space-between"><button class="btn ghost small" id="prev" aria-label="Previous month">&lt;</button>
+        <span class="pf" style="font-size:10px">${esc(monthName.toUpperCase())}</span><button class="btn ghost small" id="next" aria-label="Next month">&gt;</button></div>
+      <div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px">
+        ${["M", "T", "W", "T", "F", "S", "S"].map((x) => `<div class="center label">${x}</div>`).join("")}${cells.join("")}</div>
+      <div class="small muted">♞ full moon: the wolf · ✧ new moon: the fairy</div>
+    </div>${nav("map")}</main>`;
+  document.getElementById("prev").addEventListener("click", () => screenMoon(offset - 1));
+  document.getElementById("next").addEventListener("click", () => screenMoon(offset + 1));
+  const wb = document.getElementById("wolf");
+  if (wb) wb.addEventListener("click", () => startRun({ kind: "wolf" }));
+  if (m.fairy) bindFairy(m.fairy);
+}
+
+function proverbBox(p) {
+  return `<div class="paper"><div class="label" style="color:#6b3fa0">THE FAIRY'S PROVERB</div>
+    <div style="font-size:23px;margin-top:6px"><i>${esc(p.text)}</i></div>
+    ${p.lang === "it" ? `<div class="small" style="margin-top:4px">"${esc(p.meaning)}"</div>` : ""}
+    <div class="small" style="margin-top:8px">${esc(p.why)}</div></div>`;
+}
+
+function fairyPanel(f) {
+  const done = f.status === "won" || f.status === "lost";
+  return `<div class="px col" style="background:#24203f;border-color:#c9b8ff" id="fairy">
+    <div class="row">${fairySvg(48)}<div class="grow"><div class="label" style="color:#c9b8ff">NEW MOON · THE FAIRY</div>
+      <div style="font-size:20px">${esc(f.puzzle.title)} <span class="tiny muted">ch ${f.puzzle.chapter}</span></div></div></div>
+    <div class="small">${esc(f.puzzle.prompt)}</div>
+    ${done ? `${f.status === "won" ? `<div class="pf" style="font-size:10px;color:var(--green)">★ SOLVED</div>` : `<div class="small">The right order was:<ol style="margin:4px 0 0 20px;padding:0">${f.solution.map((x) => `<li>${esc(x)}</li>`).join("")}</ol></div>`}${proverbBox(f.proverb)}`
+      : `<div class="small muted">Tap the steps in the right order. Tap a placed step to take it back. ${f.triesLeft} ${f.triesLeft === 1 ? "try" : "tries"} left. Solve it: 2 scenario gems, 150 XP, Fairy Lantern, and a proverb.</div>
+      <div class="label">YOUR ORDER</div><div class="list" id="placed"></div>
+      <div class="label">STEPS</div><div class="list" id="pool">${f.puzzle.steps.map((t, i) => `<button class="opt" data-i="${i}">${esc(t)}</button>`).join("")}</div>
+      <div id="fout" class="col"></div>
+      <button class="btn pink" id="offer" disabled>OFFER TO THE FAIRY ▶</button>`}</div>`;
+}
+
+function bindFairy(f) {
+  const pool = document.getElementById("pool");
+  if (!pool) return;
+  const order = [];
+  const placed = document.getElementById("placed");
+  const offer = document.getElementById("offer");
+  function draw() {
+    placed.innerHTML = order.length ? order.map((i, n) => `<button class="opt" data-p="${n}" style="border-color:#c9b8ff">${n + 1}. ${esc(f.puzzle.steps[i])}</button>`).join("") : `<div class="small dim">Nothing yet.</div>`;
+    pool.querySelectorAll("button").forEach((b) => { b.hidden = order.includes(Number(b.dataset.i)); });
+    offer.disabled = order.length !== f.puzzle.steps.length;
+    placed.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { order.splice(Number(b.dataset.p), 1); draw(); }));
+  }
+  pool.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { order.push(Number(b.dataset.i)); draw(); }));
+  offer.addEventListener("click", async () => {
+    try {
+      const r = await api("/api/fairy", { order });
+      if (r.solved || r.proverb) { screenMoon(); if (r.reward) toast("The fairy smiles. Rewards granted!"); return; }
+      document.getElementById("fout").innerHTML = `<div class="why">${r.inPlace} of ${r.total} steps are in the right place. ${r.triesLeft} ${r.triesLeft === 1 ? "try" : "tries"} left.</div>`;
+      order.length = 0;
+      draw();
+    } catch (err) { toast(err.message); }
+  });
+  draw();
 }
 
 function depthOf(blocks) {
@@ -420,12 +625,14 @@ const RUN_TITLES = {
   duel: (r) => [`DUEL · ROUND ${Math.min(r.idx + 1, r.total)}/${r.total}`, r.rival?.name, "#3a2430"],
   beast: (r) => [`WILD BEAST · Q ${Math.min(r.idx + 1, r.total)}/${r.total}`, r.foe?.name, "#2c5a3a"],
   mystic: (r) => ["MYSTIC'S RIDDLE", r.foe?.name, "#2d2050"],
+  wolf: (r) => [`FULL MOON · Q ${Math.min(r.idx + 1, r.total)}/${r.total}`, "The Wolf's Shortcut Test", "#1a1a3a"],
 };
 
 function runBack(r) {
   if (r.block) return `#/b/${r.block.id}`;
   if (r.boss) return `#/ch/${r.boss.chapter}`;
   if (r.kind === "duel") return "#/rivals";
+  if (r.kind === "wolf") return "#/moon";
   return "#/";
 }
 
@@ -463,10 +670,11 @@ async function screenRun(id) {
   } else {
     const extra = r.kind === "storm" ? `<span class="pf" style="font-size:12px;color:var(--gold)" id="clock">90</span>` : maxHearts ? hearts(r.hearts, maxHearts) : "";
     header = topbar(back, kicker, esc(title || "").toUpperCase(), extra, colour);
+    if (r.kind === "wolf") header += `<div class="row" style="padding:10px 16px;background:#14142e;border-bottom:3px solid var(--bg-deep)">${wolfSvg(56)}<span class="small">Which <b>shortcut</b> (memory anchor) cracks this question?</span></div>`;
     if (r.boss) header += `<div class="row" style="padding:10px 16px;background:#2a1a30;border-bottom:3px solid var(--bg-deep)">${beastSvg(56)}<span class="small" style="font-style:italic">"${esc(r.boss.taunt)}"</span></div>`;
   }
 
-  const hintAllowed = !["duel", "storm"].includes(r.kind);
+  const hintAllowed = !["duel", "storm", "wolf"].includes(r.kind);
   $app.innerHTML = `<main class="screen">${header}
     <div class="pad col">
       <div style="font-size:22px;line-height:1.15">${esc(r.question.text)}</div>
@@ -529,8 +737,8 @@ async function screenRun(id) {
     }
     if (res.finished) {
       const msg = {
-        win: { recall: "Fundamental mastered!", quiz: "Quiz passed!", boss: "Boss defeated!", storm: "You weathered the storm!", snow: "Cache thawed!", duel: "Victory!", beast: "The beast flees!", mystic: "The mystic smiles." }[r.kind] || "Victory!",
-        lose: { recall: "Not yet. Re-read the card and try again.", quiz: "You need 2 of 3. Review and retry.", boss: "You fell. Review the chapter and return.", duel: "Defeated. Train and challenge again tomorrow.", beast: "The beast got away.", mystic: "The mystic vanishes into the mist." }[r.kind] || "Defeated.",
+        win: { recall: "Fundamental mastered!", quiz: "Quiz passed!", boss: "Boss defeated!", storm: "You weathered the storm!", snow: "Cache thawed!", duel: "Victory!", beast: "The beast flees!", mystic: "The mystic smiles.", wolf: "The wolf bows its head." }[r.kind] || "Victory!",
+        lose: { recall: "Not yet. Re-read the card and try again.", quiz: "You need 2 of 3. Review and retry.", boss: "You fell. Review the chapter and return.", duel: "Defeated. Train and challenge again tomorrow.", beast: "The beast got away.", mystic: "The mystic vanishes into the mist.", wolf: "The wolf melts into the dark. Next full moon." }[r.kind] || "Defeated.",
         draw: { duel: "A draw! Honour is shared." },
       }[res.outcome];
       const line = typeof msg === "string" ? msg : (msg?.[r.kind] || "");
@@ -742,6 +950,8 @@ async function route() {
       case "board": return await screenBoard();
       case "rivals": return await screenRivals();
       case "enc": return await screenEncounter();
+      case "travel": return await screenTravel();
+      case "moon": return await screenMoon();
       default: location.hash = "#/";
     }
   } catch (err) {
@@ -750,7 +960,6 @@ async function route() {
 }
 
 async function boot() {
-  refreshGeo();
   // Warm the sprite cache so battle screens show your gear.
   try {
     const d = await api("/api/hero");

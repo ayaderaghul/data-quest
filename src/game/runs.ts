@@ -1,6 +1,8 @@
 import type pg from "pg";
 import { BLOCK_BY_ID, BLOCKS, CHAPTERS, RIVALS, getQuestion, questionRefs } from "../content/index.js";
+import type { Question } from "../content/types.js";
 import type { Weather } from "./weather.js";
+import { moonAt } from "./moon.js";
 import {
   blockCleared, blockUnlocked, chapterSummary, emptyReward, grant, loadState, studiedBlocks,
   type Reward, type UserState,
@@ -16,16 +18,38 @@ export class GameError extends Error {
 interface RunQuestion {
   ref: string;
   order: number[];
+  custom?: Question; // e.g. the wolf's shortcut questions, built at run creation
 }
+
+const qOf = (rq: RunQuestion): Question => rq.custom ?? getQuestion(rq.ref)!;
 
 const HINT_COST = 20;
 const STORM_SECONDS = 90;
 
-function makeQuestions(runSeed: string, refs: string[]): RunQuestion[] {
+function makeQuestions(runSeed: string, refs: string[], customs?: Question[]): RunQuestion[] {
   return refs.map((ref, i) => {
-    const q = getQuestion(ref)!;
-    return { ref, order: perm(`${runSeed}:${i}:${ref}`, q.options.length) };
+    const custom = customs?.[i];
+    const q = custom ?? getQuestion(ref)!;
+    return { ref, order: perm(`${runSeed}:${i}:${ref}`, q.options.length), ...(custom ? { custom } : {}) };
   });
+}
+
+/** The wolf's test: for a real quiz question, pick the memory anchor (shortcut) that cracks it. */
+function wolfQuestions(studied: string[]): { refs: string[]; customs: Question[] } {
+  const quizRefs = questionRefs(studied).filter((r) => r.includes(":quiz:"));
+  const refs = sample(quizRefs, 5);
+  const customs = refs.map((ref) => {
+    const block = BLOCK_BY_ID.get(ref.split(":")[0])!;
+    const q = getQuestion(ref)!;
+    const others = BLOCKS.filter((b) => b.chapter !== block.chapter).map((b) => b.card.anchor);
+    return {
+      q: q.q,
+      options: [block.card.anchor, ...sample(others, 3)],
+      answer: 0,
+      why: `The shortcut was "${block.card.anchor}" (${block.id} ${block.title}). Answer: ${q.options[q.answer]}.`,
+    };
+  });
+  return { refs, customs };
 }
 
 export interface CreateOpts {
@@ -42,6 +66,7 @@ export async function createRun(
   let refs: string[] = [];
   let meta: Record<string, unknown> = {};
   let hearts: number | null = null;
+  let customs: Question[] | undefined;
 
   switch (kind) {
     case "recall":
@@ -109,6 +134,20 @@ export async function createRun(
       await c.query("UPDATE encounters SET status = 'fighting' WHERE id = $1", [e.id]);
       break;
     }
+    case "wolf": {
+      const moon = moonAt();
+      if (!moon.isFull) throw new GameError(403, "The wolf only walks under a full moon.");
+      const studied = studiedBlocks(s);
+      if (studied.length < 2) throw new GameError(403, "Study at least two building blocks first.");
+      const ins = await c.query(
+        "INSERT INTO moon_events (user_id, cycle, kind) VALUES ($1, $2, 'wolf') ON CONFLICT DO NOTHING RETURNING cycle",
+        [userId, moon.cycle],
+      );
+      if (!ins.rows[0]) throw new GameError(403, "You've already faced the wolf this full moon.");
+      ({ refs, customs } = wolfQuestions(studied));
+      meta = { cycle: moon.cycle };
+      break;
+    }
     default:
       throw new GameError(400, "Unknown run type.");
   }
@@ -116,7 +155,7 @@ export async function createRun(
   const seed = `${userId}:${Date.now()}:${rand()}`;
   const ins = await c.query(
     "INSERT INTO runs (user_id, kind, meta, questions, hearts) VALUES ($1, $2, $3, $4, $5) RETURNING id",
-    [userId, kind, JSON.stringify(meta), JSON.stringify(makeQuestions(seed, refs)), hearts],
+    [userId, kind, JSON.stringify(meta), JSON.stringify(makeQuestions(seed, refs, customs)), hearts],
   );
   return Number(ins.rows[0].id);
 }
@@ -124,7 +163,7 @@ export async function createRun(
 function hintRemoved(run: any): number | null {
   if (run.hint_idx !== run.idx) return null;
   const rq: RunQuestion = run.questions[run.idx];
-  const q = getQuestion(rq.ref)!;
+  const q = qOf(rq);
   const wrongPositions = rq.order.map((orig, pos) => ({ orig, pos })).filter((x) => x.orig !== q.answer).map((x) => x.pos);
   return wrongPositions[Math.floor(seeded(`hint:${run.id}:${run.idx}`) * wrongPositions.length)];
 }
@@ -161,7 +200,7 @@ export async function serveRun(c: pg.PoolClient, userId: number, runId: number) 
     await c.query("UPDATE runs SET served_idx = idx, served_at = now() WHERE id = $1", [runId]);
   }
   const rq: RunQuestion = run.questions[run.idx];
-  const q = getQuestion(rq.ref)!;
+  const q = qOf(rq);
   return {
     ...runHeader(run),
     question: { text: q.q, options: rq.order.map((i) => q.options[i]), removed: hintRemoved(run), source: rq.ref.split(":")[0] },
@@ -172,7 +211,7 @@ export async function useHint(c: pg.PoolClient, userId: number, runId: number, w
   const r = await c.query("SELECT * FROM runs WHERE id = $1 AND user_id = $2 FOR UPDATE", [runId, userId]);
   const run = r.rows[0];
   if (!run || run.status !== "active") throw new GameError(404, "Run not found.");
-  if (["duel", "storm"].includes(run.kind)) throw new GameError(403, "No hints in a duel or a storm.");
+  if (["duel", "storm", "wolf"].includes(run.kind)) throw new GameError(403, "No hints in duels, storms or the wolf's test.");
   if (weather === "fog") throw new GameError(403, "The fog is too thick for hints today.");
   if (run.hint_idx === run.idx) return { removed: hintRemoved(run) };
   const u = await c.query("UPDATE users SET gold = gold - $2 WHERE id = $1 AND gold >= $2 RETURNING gold", [userId, HINT_COST]);
@@ -224,7 +263,7 @@ export async function answerRun(c: pg.PoolClient, userId: number, runId: number,
   if (run.served_idx !== run.idx) throw new GameError(409, "Load the question first.");
 
   const rq: RunQuestion = run.questions[run.idx];
-  const q = getQuestion(rq.ref)!;
+  const q = qOf(rq);
   if (!Number.isInteger(choice) || choice < 0 || choice >= rq.order.length) throw new GameError(400, "Pick one of the options.");
 
   const elapsed = Math.min(600, (Date.now() - new Date(run.served_at).getTime()) / 1000);
@@ -345,6 +384,19 @@ async function finishRun(c: pg.PoolClient, userId: number, run: any, weather: We
       outcome = won ? "win" : "lose";
       if (won) reward = { ...reward, xp: 60, scenario: 1, quiz: 1, items: ["wyrm-scale"] };
       await c.query("UPDATE encounters SET status = $2 WHERE id = $1", [run.meta.encounterId, won ? "won" : "lost"]);
+      break;
+    }
+    case "wolf": {
+      const won = run.correct >= 4;
+      outcome = won ? "win" : "lose";
+      if (won) {
+        reward = { ...reward, xp: 250, fundamental: 3, items: ["wolf-pelt"] };
+        reward.notes.push("The wolf howls in respect and leaves you its pelt.");
+      } else if (run.correct >= 3) {
+        reward.xp = 60;
+        reward.notes.push("Close. The wolf grants you some XP and vanishes into the trees.");
+      }
+      await c.query("UPDATE moon_events SET status = $3 WHERE user_id = $1 AND cycle = $2 AND kind = 'wolf'", [userId, run.meta.cycle, won ? "won" : "lost"]);
       break;
     }
     case "mystic": {

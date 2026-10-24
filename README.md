@@ -13,6 +13,8 @@ Clear every block to face the chapter boss and win a piece of noble gear. Gems a
 Random events keep it interesting:
 
 - **Live weather** (Open-Meteo, locked once per day): sunny +10% gold, cloudy +10% XP, rain drops bonus gems, fog doubles quiz gems but disables hints, snow brings a review challenge, storms bring a timed challenge.
+- **Your sky, or any sky**: the game asks for your location (or a city) before fetching weather. Teleport to any city to play under its weather: the first teleport each day is free, then 25 gold. Weather comes from Open-Meteo with MET Norway as a fallback; city search falls back to OpenStreetMap Nominatim.
+- **Moon calendar**: at full moon a wolf gives a 5-question shortcut test (pick the memory anchor that cracks each question; big rewards). At new moon a fairy gives a step-ordering puzzle and a proverb (mostly Italian).
 - **Wild encounters** on the map: mystics (riddles), beasts (3-question fights), wandering elves (gem trades) and rival knights (speed duels).
 
 Chapters 1–5 are playable; 6–12 are on the map as "coming soon".
@@ -38,6 +40,7 @@ npm run invite        # prints a code and its INVITE_CODE_HASH
 | `INVITE_CODE_HASH` | SHA-256 hex of the invite code |
 | `NODE_ENV` | `production` on Render (secure cookies, ignores `DEV_WEATHER`) |
 | `DEV_WEATHER` | Local only: force `sunny`, `cloudy`, `rain`, `snow`, `storm` or `fog` |
+| `DEV_MOON` | Local only: force `full` or `new` |
 
 ## Run locally
 
@@ -54,6 +57,8 @@ The schema is created automatically on start.
 ```bash
 npm run check                                   # validates content and prerequisite graph
 INVITE=DQ-... node test/smoke.mjs               # end-to-end test against a running server (fresh DB)
+node test/moon.mjs                              # location, teleport, wolf (server with DEV_MOON=full)
+MODE=new node test/moon.mjs                     # fairy (server with DEV_MOON=new)
 ```
 
 ## Adding chapters

@@ -124,6 +124,21 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS runs_user_kind ON runs (user_id, kind, created_at);
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS place TEXT;
+ALTER TABLE daily_events ADD COLUMN IF NOT EXISTS teleports INT NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS moon_events (
+  user_id   INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  cycle     TEXT NOT NULL,
+  kind      TEXT NOT NULL,
+  status    TEXT NOT NULL DEFAULT 'started',
+  attempts  INT NOT NULL DEFAULT 0,
+  puzzle_id TEXT,
+  PRIMARY KEY (user_id, cycle, kind)
+);
+
 CREATE TABLE IF NOT EXISTS encounters (
   id         BIGSERIAL PRIMARY KEY,
   user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

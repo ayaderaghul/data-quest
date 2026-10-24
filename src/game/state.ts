@@ -154,4 +154,6 @@ export const ITEMS: Record<string, { name: string; kind: "gear" | "cosmetic" | "
   "wyrm-scale": { name: "Wyrm Scale", kind: "trophy", desc: "Defeated a wild beast." },
   "mystic-orb": { name: "Mystic Orb", kind: "trophy", desc: "Answered a mystic's riddle." },
   "rival-pennant": { name: "Rival's Pennant", kind: "trophy", desc: "Won a duel against a rival knight." },
+  "wolf-pelt": { name: "Wolf Pelt", kind: "trophy", desc: "Passed the full-moon wolf's shortcut test." },
+  "fairy-lantern": { name: "Fairy Lantern", kind: "trophy", desc: "Solved a new-moon fairy's puzzle." },
 };
