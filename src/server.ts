@@ -1,4 +1,5 @@
 import express, { type NextFunction, type Response } from "express";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { migrate, pool, tx } from "./db.js";
@@ -263,12 +264,18 @@ app.use("/api", (_req, res) => res.status(404).json({ error: "Not found." }));
 // ---------- static frontend ----------
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, "..", "public");
-// no-cache = the browser revalidates (cheap 304 via ETag), so a new deploy reaches phones straight away.
-app.use(express.static(publicDir, { index: "index.html", setHeaders: (res) => res.setHeader("Cache-Control", "no-cache") }));
-app.get("*", (_req, res) => {
-  res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(publicDir, "index.html"));
-});
+// Each deploy loads app.js/style.css under a new URL, so no browser can keep running an old build.
+const BUILD = (process.env.RENDER_GIT_COMMIT ?? String(Date.now())).slice(0, 10);
+const indexHtml = fs.readFileSync(path.join(publicDir, "index.html"), "utf8")
+  .replace('src="/app.js"', `src="/app.js?v=${BUILD}"`)
+  .replace('href="/style.css"', `href="/style.css?v=${BUILD}"`);
+const sendIndex = (_req: unknown, res: Response) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.type("html").send(indexHtml);
+};
+app.get(["/", "/index.html"], sendIndex);
+app.use(express.static(publicDir, { index: false, setHeaders: (res) => res.setHeader("Cache-Control", "no-cache") }));
+app.get("*", sendIndex);
 
 app.use((err: unknown, _req: AuthedRequest, res: Response, _next: NextFunction) => {
   if (err instanceof GameError) return res.status(err.status).json({ error: err.message });
