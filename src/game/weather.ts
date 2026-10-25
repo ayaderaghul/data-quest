@@ -1,6 +1,6 @@
 import type { Db } from "../db.js";
 import { localDay } from "./util.js";
-import { Breaker, InFlight, Spacer, TtlCache } from "./upstream.js";
+import { Breaker, InFlight, Spacer, TtlCache, setBreakerPersistence, type BreakerState } from "./upstream.js";
 
 export type Weather = "sunny" | "cloudy" | "rain" | "snow" | "storm" | "fog";
 
@@ -47,6 +47,36 @@ const breakers = {
   nominatim: new Breaker("nominatim"),
 };
 export const upstreamStatus = () => Object.fromEntries(Object.values(breakers).map((b) => [b.name, b.status()]));
+export const blockedServices = () => Object.values(breakers).filter((b) => b.isBlocked()).map((b) => ({ name: b.name, ...b.status() }));
+export function resetBreaker(name: string): boolean {
+  const b = Object.values(breakers).find((x) => x.name === name);
+  if (!b) return false;
+  b.reset();
+  return true;
+}
+
+type MetEntry = { reading: Reading; expires: number; lastModified: string | null };
+
+/** Where breaker pauses and MET Norway cache entries are kept so they survive a restart. */
+export interface UpstreamStore {
+  loadBreakers(): Promise<BreakerState[]>;
+  saveBreaker(s: BreakerState): Promise<void>;
+  getMet(url: string): Promise<MetEntry | null>;
+  putMet(url: string, e: MetEntry): Promise<void>;
+}
+let store: UpstreamStore | null = null;
+
+/** Called once at startup: restores saved pauses and starts saving every change. */
+export async function initUpstream(s: UpstreamStore) {
+  store = s;
+  const rows = await s.loadBreakers();
+  for (const row of rows) Object.values(breakers).find((b) => b.name === row.name)?.load(row);
+  const paused = rows.filter((r) => r.stopped || r.until > Date.now()).map((r) => `${r.name} (${r.reason})`);
+  if (paused.length) console.log(`[upstream] restored pauses: ${paused.join(", ")}`);
+  setBreakerPersistence((state) => {
+    s.saveBreaker(state).catch((err) => console.error("[upstream] could not save breaker state:", err.message));
+  });
+}
 
 const OPEN_METEO_TTL = 30 * 60_000; // Open-Meteo sends no Expires header; reuse a reading for 30 minutes
 const FAILURE_TTL = 2 * 60_000; // after every source failed for a place, wait 2 minutes before trying again
@@ -98,6 +128,8 @@ async function call(
     if (res.status === 304 && opts.notModified) {
       reading = opts.notModified();
       detail = reading ? `not modified, reusing ${reading.weather}` : "304 without a stored reading";
+    } else if (res.status === 401 || res.status === 403) {
+      detail = `you are blocked (HTTP ${res.status}): ${body.slice(0, 120).replace(/\s+/g, " ")}`;
     } else if (!res.ok) {
       detail = body.slice(0, 160).replace(/\s+/g, " ");
     } else {
@@ -145,14 +177,32 @@ export function weatherFromSymbol(symbol: string): Weather {
  * - send If-Modified-Since with the previous Last-Modified, accepting 304 Not Modified.
  * Both are followed here. Entries are kept for a day so a stale-but-known reading can be revalidated.
  */
-const metStore = new TtlCache<{ reading: Reading; expires: number; lastModified: string | null }>(200);
+const metStore = new TtlCache<MetEntry>(200);
+
+async function metGet(url: string): Promise<MetEntry | undefined> {
+  const mem = metStore.get(url);
+  if (mem || !store) return mem;
+  try {
+    const row = await store.getMet(url);
+    if (row) metStore.set(url, row, 24 * 3600_000);
+    return row ?? undefined;
+  } catch (err) {
+    console.error("[weather] could not read MET cache:", (err as Error).message);
+    return undefined;
+  }
+}
+
+function metPut(url: string, e: MetEntry) {
+  metStore.set(url, e, 24 * 3600_000);
+  store?.putMet(url, e).catch((err) => console.error("[weather] could not save MET cache:", err.message));
+}
 const MET_DEFAULT_TTL = 30 * 60_000;
 
 /** Fallback source: MET Norway Locationforecast (global coverage; needs a real User-Agent). */
 async function fromMetNo(lat: number, lon: number): Promise<CallResult> {
   // Two decimals (~1 km) keeps the URL stable for a place, so caching and If-Modified-Since actually match.
   const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(2)}&lon=${lon.toFixed(2)}`;
-  const stored = metStore.get(url);
+  const stored = await metGet(url);
   if (stored && stored.expires > Date.now()) {
     const until = new Date(stored.expires).toISOString().slice(11, 16);
     return {
@@ -172,7 +222,7 @@ async function fromMetNo(lat: number, lon: number): Promise<CallResult> {
   });
   if (r.reading) {
     const expires = r.expires && r.expires > Date.now() ? r.expires : Date.now() + MET_DEFAULT_TTL;
-    metStore.set(url, { reading: r.reading, expires, lastModified: r.lastModified ?? stored?.lastModified ?? null }, 24 * 3600_000);
+    metPut(url, { reading: r.reading, expires, lastModified: r.lastModified ?? stored?.lastModified ?? null });
     return { ...r, expires };
   }
   return r;

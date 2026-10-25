@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 import { migrate, pool, tx } from "./db.js";
 import { authRateLimit, login, logout, register, registrationOpen, requireAuth, type AuthedRequest } from "./auth.js";
 import { CHAPTERS, REGIONS, RIVALS } from "./content/index.js";
-import { checkSources, upstreamStatus, getDailyEvent, placeName, searchPlaces, setLocation, TELEPORT_COST, WEATHER_INFO } from "./game/weather.js";
+import { blockedServices, checkSources, initUpstream, resetBreaker, upstreamStatus, getDailyEvent, placeName, searchPlaces, setLocation, TELEPORT_COST, WEATHER_INFO } from "./game/weather.js";
 import { moonView, solveFairy } from "./game/moonEvents.js";
+import { pgUpstreamStore } from "./upstreamStore.js";
 import { ITEMS, chapterSummary, heroSummary, loadState, studiedBlocks } from "./game/state.js";
 import { GameError, HINT_COST, answerRun, createRun, serveRun, useHint } from "./game/runs.js";
 import {
@@ -24,7 +25,7 @@ app.use(express.json({ limit: "20kb" }));
 app.use((_req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "same-origin");
@@ -81,6 +82,7 @@ app.get("/api/state", wrap(async (req, res) => {
       challenge: ev.needsLocation ? null : challenge,
       equipped: [...s.inventory],
       moon: await moonView(c, userId),
+      blocked: blockedServices(),
     };
   });
   res.json(out);
@@ -134,6 +136,12 @@ app.get("/api/weather/check", wrap(async (req, res) => {
   const { lat, lon, place } = u.rows[0];
   const la = lat ?? 45.672, lo = lon ?? 11.927;
   res.json({ place: lat === null ? "Castelfranco Veneto (default)" : place, attempts: await checkSources(la, lo), breakers: upstreamStatus() });
+}));
+
+// The player can lift a pause by hand (e.g. after a block was lifted). It only allows the next call.
+app.post("/api/upstream/reset", wrap(async (req, res) => {
+  if (!resetBreaker(String(req.body?.name ?? ""))) throw new GameError(404, "No such service.");
+  res.json({ ok: true, breakers: upstreamStatus() });
 }));
 
 // ---------- moon ----------
@@ -285,6 +293,7 @@ app.use((err: unknown, _req: AuthedRequest, res: Response, _next: NextFunction) 
 
 const port = Number(process.env.PORT ?? 3000);
 migrate()
+  .then(() => initUpstream(pgUpstreamStore))
   .then(() => {
     app.listen(port, () => {
       console.log(`Data Quest listening on :${port} (${RIVALS.length} rivals, ${CHAPTERS.filter((c) => c.available).length} chapters playable)`);

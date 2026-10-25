@@ -197,6 +197,11 @@ function rewardBox(reward, heading = "REWARDS") {
     ${(reward.notes || []).map((n) => `<div class="note">${esc(n)}</div>`).join("")}</div>`;
 }
 
+const SERVICE_NAMES = {
+  "open-meteo": "Open-Meteo weather", "met.no": "MET Norway weather",
+  "open-meteo-geocoding": "Open-Meteo city search", nominatim: "OpenStreetMap search",
+};
+
 const ITEM_NAMES = {
   "gear-1": "Reliability Helm", "gear-2": "Schema Gloves", "gear-3": "B-Tree Boots", "gear-4": "Encoding Belt", "gear-5": "Follower's Pauldrons",
   plume: "Red Plume", "gold-trim": "Gold Trim", "royal-cape": "Royal Cape", "lightning-rod": "Lightning Rod", "frost-scarf": "Frost Scarf",
@@ -304,11 +309,14 @@ async function screenMap() {
           <div class="label" style="color:var(--gem-f)">TODAY'S WEATHER EVENT</div>
           <div style="font-size:22px;margin-top:4px">${esc(w.label)}${w.temp !== null ? ` · ${Math.round(w.temp)}°C` : ""} · ${esc(w.place)}</div>
           <div class="small" style="color:#c9d6ff">${esc(w.effect)}</div>
-          ${w.live ? (w.source ? `<div class="tiny muted">via ${w.source === "met.no" ? "MET Norway" : w.source === "open-meteo" ? "Open-Meteo" : esc(w.source)}</div>` : "")
+          ${w.live ? (w.source ? `<div class="tiny muted">Weather data by ${w.source === "met.no" ? "MET Norway" : w.source === "open-meteo" ? "Open-Meteo.com" : esc(w.source)} (CC BY 4.0)</div>` : "")
             : `<div class="tiny muted">No weather source answered, so it's a plain cloudy day for now. ${w.error ? esc(w.error) : ""} <a href="#/travel">Check the sky</a></div>`}
         </div>
-        <a href="#/travel" class="btn ghost small" style="min-height:44px;padding:4px 8px" aria-label="Teleport to another city">✈</a>
+        <a href="#/travel" class="btn ghost small" style="min-height:44px;padding:4px 10px;font-family:var(--body);font-size:26px" aria-label="Teleport to another city">✈</a>
       </div>`}
+      ${(st.blocked || []).map((b) => `<div class="px" role="alert" style="background:#4a1020;border-color:var(--red)">
+        <div class="pf" style="font-size:11px;color:var(--red);line-height:1.5">YOU ARE BLOCKED</div>
+        <div class="small" style="margin-top:6px">${esc(SERVICE_NAMES[b.name] || b.name)} refused our requests (${esc(b.reason)}). ${b.stopped ? "Calls to it have stopped; you can retry from the teleport screen." : `Pausing until ${new Date(b.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`}</div></div>`).join("")}
       ${moonCard(st.moon)}
       ${encCard}${chCard}
       <div class="row" style="justify-content:space-between;align-items:baseline"><h2 class="pf" style="font-size:11px">THE REALM</h2>
@@ -354,6 +362,7 @@ async function screenTravel() {
         <button class="btn small" type="submit" style="min-width:64px">GO</button>
       </form>
       <div class="list" id="results"></div>
+      <p class="tiny muted" style="margin:0">Weather data by Open-Meteo.com and MET Norway (CC BY 4.0). Place search © OpenStreetMap contributors (ODbL) and Open-Meteo. Your phone never talks to these services: the game's server asks them, so they never see your IP address.</p>
     </div>${nav("map")}</main>`;
   document.getElementById("gps").addEventListener("click", useMyLocation);
   document.getElementById("check").addEventListener("click", async () => {
@@ -361,7 +370,14 @@ async function screenTravel() {
     out.innerHTML = `<span class="pulse">Asking the sky...</span>`;
     try {
       const r = await api("/api/weather/check");
-      out.innerHTML = `<div>${esc(r.place)}</div>` + r.attempts.map((a) => `<div><span style="color:${a.ok ? "var(--green)" : "var(--red)"}">${a.ok ? "✓" : "✗"}</span> ${esc(a.source)} · ${a.status ?? (a.skipped ? "skipped" : a.ok ? "cached" : "no response")} · ${a.ms}ms · ${esc(a.detail)}</div>`).join("");
+      const pauses = Object.entries(r.breakers).filter(([, b]) => b.open);
+      out.innerHTML = `<div>${esc(r.place)}</div>` + r.attempts.map((a) => `<div><span style="color:${a.ok ? "var(--green)" : "var(--red)"}">${a.ok ? "✓" : "✗"}</span> ${esc(a.source)} · ${a.status ?? (a.skipped ? "skipped" : a.ok ? "cached" : "no response")} · ${a.ms}ms · ${esc(a.detail)}</div>`).join("")
+        + (pauses.length ? `<div class="label" style="margin-top:8px">PAUSED SERVICES</div>` + pauses.map(([name, b]) => `<div class="row" style="margin-top:4px">
+            <span class="grow">${b.blocked ? `<b style="color:var(--red)">You are blocked</b> by ` : ""}${esc(SERVICE_NAMES[name] || name)}: ${esc(b.reason)}${b.stopped ? ", calls stopped" : b.until ? `, until ${new Date(b.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</span>
+            <button class="btn ghost small" data-reset="${esc(name)}" style="min-height:40px">RETRY</button></div>`).join("") : "");
+      out.querySelectorAll("[data-reset]").forEach((btn) => btn.addEventListener("click", async () => {
+        try { await api("/api/upstream/reset", { name: btn.dataset.reset }); toast("Pause lifted. The next request will try again."); btn.disabled = true; } catch (err) { toast(err.message); }
+      }));
     } catch (err) { out.textContent = err.message; }
   });
   document.getElementById("search").addEventListener("submit", async (e) => {
@@ -998,4 +1014,9 @@ async function boot() {
 }
 
 window.addEventListener("hashchange", route);
+// No background polling anywhere: the map only refreshes when you come back to a visible page.
+document.addEventListener("visibilitychange", () => {
+  const onMap = (location.hash.replace(/^#/, "") || "/") === "/";
+  if (document.visibilityState === "visible" && onMap) route();
+});
 boot();

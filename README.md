@@ -13,11 +13,33 @@ Clear every block to face the chapter boss and win a piece of noble gear. Gems a
 Random events keep it interesting:
 
 - **Live weather** (Open-Meteo, locked once per day): sunny +10% gold, cloudy +10% XP, rain drops bonus gems, fog doubles quiz gems but disables hints, snow brings a review challenge, storms bring a timed challenge.
-- **Your sky, or any sky**: the game asks for your location (or a city) before fetching weather. Teleport to any city to play under its weather: the first teleport each day is free, then 25 gold. Weather comes from Open-Meteo with MET Norway as a fallback; city search falls back to OpenStreetMap Nominatim. Every source sits behind a circuit breaker (`src/game/upstream.ts`): a daily-quota 429 waits until 00:05 UTC, Retry-After is honoured, 401/403 waits 6 hours, other failures back off 1→2→4…30 minutes, and nothing is sent while a breaker is open. MET Norway responses are kept until their `Expires` time and then revalidated with `If-Modified-Since` (a 304 reuses the stored reading), as their terms require; Open-Meteo readings are reused for 30 minutes per ~10 km square; a place where every source just failed isn't retried for 2 minutes, simultaneous identical requests share one call, and Nominatim is held to 1 request per second.
+- **Your sky, or any sky**: the game asks for your location (or a city) before fetching weather. Teleport to any city to play under its weather: the first teleport each day is free, then 25 gold.
 - **Moon calendar**: at full moon a wolf gives a 5-question shortcut test (pick the memory anchor that cracks each question; big rewards). At new moon a fairy gives a step-ordering puzzle and a proverb (mostly Italian).
 - **Wild encounters** on the map: mystics (riddles), beasts (3-question fights), wandering elves (gem trades) and rival knights (speed duels).
 
 Chapters 1–5 are playable; 6–12 are on the map as "coming soon".
+
+## Third-party services
+
+The browser only ever talks to this server; the server calls these services, so they never see the player's IP address. Fonts (Press Start 2P, VT323, SIL OFL) are self-hosted in `public/fonts`, so nothing loads from Google. Nothing is fetched in the background: weather is requested only when the map loads while the page is open and visible, and each day's weather is then locked.
+
+| Service | Used for | Terms honoured |
+| --- | --- | --- |
+| Open-Meteo forecast | Primary weather | Non-commercial free tier; attribution "Weather data by Open-Meteo.com" (CC BY 4.0); readings reused 30 min per ~10 km |
+| MET Norway Locationforecast | Fallback weather | Identifying User-Agent; ≤4 decimal coordinates; no request before `Expires`; revalidation with `If-Modified-Since` (304 reuses the stored reading); `Expires`/`Last-Modified` stored in Postgres (`met_cache`) so they survive restarts; attribution (CC BY 4.0) |
+| Open-Meteo geocoding | City search | Search only on submit; results cached for a day |
+| OpenStreetMap Nominatim | Fallback city search, naming a shared GPS spot | Identifying User-Agent; at most 1 request/second; no autocomplete; results cached for a day; attribution © OpenStreetMap contributors (ODbL) |
+
+### When a service fails
+
+Each service has its own circuit breaker (`src/game/upstream.ts`), saved in Postgres (`upstream_state`) so a restart doesn't forget a pause. While a breaker is open, no request is sent.
+
+- Daily-quota 429 (e.g. Open-Meteo from Render's shared IP) → paused until 00:05 UTC
+- `Retry-After` → respected, up to 24 hours
+- 401/403 → the map shows **"You are blocked"**; paused 1 hour, then 1 day if blocked again, then calls stop until the player presses Retry in Sky check
+- 5xx, timeouts, network errors → 1, 2, 4 … up to 60 minutes
+- 400/404 for one place → no pause
+- Any success → breaker closes and counters reset
 
 ## Stack
 
@@ -61,6 +83,7 @@ node test/moon.mjs                              # location, teleport, wolf (serv
 MODE=new node test/moon.mjs                     # fairy (server with DEV_MOON=new)
 node test/upstream.mjs                          # back-off rules for the weather and geocoding APIs
 node test/metno.mjs                             # MET Norway Expires / If-Modified-Since (fake fetch, no network)
+node test/restart.mjs                           # pauses and MET entries survive a restart (fake store)
 ```
 
 ## Adding chapters

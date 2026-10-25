@@ -1,92 +1,172 @@
-// Polite access to third-party APIs: a circuit breaker per source, so that when a
-// service refuses or fails we back off instead of retrying on every page load.
+// Polite access to third-party APIs: a circuit breaker per service, so that when a
+// service refuses or fails we pause it instead of retrying on every page load.
+// Breaker state is saved to the database, so a Render restart doesn't forget a pause.
 //
-// Rules:
-// - 429 with Retry-After            → wait exactly what the server asked
-// - 429 "Daily ... limit exceeded"   → wait until 00:05 UTC (Open-Meteo resets daily quotas)
-// - 429 "Hourly ... limit"           → wait until the next hour
-// - 429 "Minutely ... limit" / other → wait 1 minute, doubling on repeats
-// - 403 / 401                        → wait 6 hours (we're blocked or misidentified; hammering won't help)
-// - 5xx, timeout, network error      → exponential backoff: 1, 2, 4, 8 ... capped at 30 minutes
-// - any success                      → breaker closes, backoff resets
-// While a breaker is open the source is skipped entirely: no request is sent.
+// Rules (each service has its own breaker):
+// - 429 "Daily ... limit exceeded"  → pause until 00:05 UTC, just after the daily quota resets
+// - Retry-After header (any status) → wait exactly what the service asked, up to 24 hours
+// - 429 "Hourly ... limit"          → pause until just after the next hour
+// - 401 / 403 "you are blocked"     → 1st time: 1 hour; 2nd in a row: 1 day; 3rd: stop calling entirely
+// - 5xx, other 429, timeouts, network errors → 1, 2, 4, 8 ... up to 60 minutes
+// - 400 / 404 (bad request for one place) → no pause; the service itself is fine
+// - any success → the breaker closes and every counter resets
+// While a breaker is open, no request is sent to that service.
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+
+export interface BreakerState {
+  name: string;
+  until: number; // epoch ms; 0 = closed
+  failures: number; // consecutive errors, drives exponential backoff
+  strikes: number; // consecutive 401/403 refusals
+  stopped: boolean; // after 3 refusals: no more calls until someone resets it
+  reason: string;
+}
+
+type Persist = (s: BreakerState) => void;
+let persist: Persist = () => {};
+/** The weather module plugs in a database writer here. */
+export function setBreakerPersistence(fn: Persist) {
+  persist = fn;
+}
 
 export class Breaker {
   private until = 0;
   private failures = 0;
+  private strikes = 0;
+  private stopped = false;
   private reason = "";
   private loggedSkip = false;
 
   constructor(readonly name: string) {}
 
+  load(s: Partial<BreakerState>) {
+    this.until = s.until ?? 0;
+    this.failures = s.failures ?? 0;
+    this.strikes = s.strikes ?? 0;
+    this.stopped = s.stopped ?? false;
+    this.reason = s.reason ?? "";
+  }
+
+  state(): BreakerState {
+    return { name: this.name, until: this.until, failures: this.failures, strikes: this.strikes, stopped: this.stopped, reason: this.reason };
+  }
+
   isOpen(now = Date.now()): boolean {
-    return now < this.until;
+    return this.stopped || now < this.until;
   }
 
-  status() {
-    return { open: this.isOpen(), until: this.until ? new Date(this.until).toISOString() : null, reason: this.reason, failures: this.failures };
+  /** True while the service has refused us (401/403), so the UI can say "you are blocked". */
+  isBlocked(now = Date.now()): boolean {
+    return this.strikes > 0 && this.isOpen(now);
   }
 
-  /** One log line per cooldown, not one per skipped request. */
+  status(now = Date.now()) {
+    return {
+      open: this.isOpen(now),
+      blocked: this.isBlocked(now),
+      stopped: this.stopped,
+      until: this.stopped ? null : this.until > now ? new Date(this.until).toISOString() : null,
+      reason: this.reason,
+      failures: this.failures,
+      strikes: this.strikes,
+    };
+  }
+
+  /** Human sentence for skipped calls. Logged once per pause, not once per skipped request. */
   skipNote(): string {
-    const note = `cooling down until ${new Date(this.until).toISOString().slice(11, 16)} UTC (${this.reason})`;
     if (!this.loggedSkip) {
-      console.log(`[upstream] ${this.name} skipped: ${note}`);
+      const when = this.stopped ? "calls stopped until reset" : `paused until ${new Date(this.until).toISOString().slice(11, 16)} UTC`;
+      console.log(`[upstream] ${this.name} skipped: ${this.reason}; ${when}`);
       this.loggedSkip = true;
     }
-    return note;
+    // The UI shows the resume time in your own time zone, so the note itself has no clock time.
+    return this.stopped ? `${this.reason}; calls stopped` : `${this.reason}; paused`;
+  }
+
+  private changed() {
+    this.loggedSkip = false;
+    persist(this.state());
   }
 
   success() {
-    if (this.failures || this.until) console.log(`[upstream] ${this.name} recovered`);
-    this.failures = 0;
-    this.until = 0;
-    this.reason = "";
+    if (this.failures || this.until || this.strikes || this.stopped) {
+      console.log(`[upstream] ${this.name} recovered`);
+      this.failures = 0;
+      this.strikes = 0;
+      this.until = 0;
+      this.stopped = false;
+      this.reason = "";
+      this.changed();
+    }
   }
 
-  failure(status: number | null, retryAfter: string | null, body: string, now = Date.now()) {
-    this.failures++;
-    const backoff = Math.min(30 * MIN, MIN * 2 ** (this.failures - 1));
+  /** Owner-triggered reset (e.g. after a block has been lifted). */
+  reset() {
+    this.failures = 0;
+    this.strikes = 0;
+    this.until = 0;
+    this.stopped = false;
+    this.reason = "";
+    console.log(`[upstream] ${this.name} reset by the player`);
+    this.changed();
+  }
+
+  /** Returns false when the failure doesn't pause the service (400/404 for one place). */
+  failure(status: number | null, retryAfter: string | null, body: string, now = Date.now()): boolean {
+    if (status === 400 || status === 404) {
+      console.warn(`[upstream] ${this.name} HTTP ${status}: bad request for this place; service not paused`);
+      return false;
+    }
     let wait: number;
     let reason: string;
     const ra = parseRetryAfter(retryAfter, now);
-    if (status === 429 && ra !== null) {
-      wait = ra;
-      reason = "rate limited (Retry-After)";
+    if (status === 401 || status === 403) {
+      this.strikes++;
+      reason = `you are blocked (HTTP ${status})`;
+      if (this.strikes >= 3) {
+        this.stopped = true;
+        wait = 0;
+      } else {
+        wait = this.strikes === 1 ? HOUR : DAY;
+      }
+      if (ra !== null && !this.stopped) wait = Math.max(wait, ra);
     } else if (status === 429 && /daily/i.test(body)) {
       const next = new Date(now);
       next.setUTCHours(24, 5, 0, 0);
       wait = next.getTime() - now;
       reason = "daily quota used up";
+    } else if (ra !== null) {
+      wait = ra;
+      reason = `asked to come back later (HTTP ${status}, Retry-After)`;
     } else if (status === 429 && /hourly/i.test(body)) {
       wait = HOUR - (now % HOUR) + MIN;
       reason = "hourly quota used up";
-    } else if (status === 429) {
-      wait = backoff;
-      reason = "rate limited";
-    } else if (status === 401 || status === 403) {
-      wait = 6 * HOUR;
-      reason = `refused (HTTP ${status})`;
     } else {
-      wait = backoff;
-      reason = status ? `HTTP ${status}` : "no response";
+      this.failures++;
+      wait = Math.min(60 * MIN, MIN * 2 ** (this.failures - 1));
+      reason = status === 429 ? "rate limited" : status ? `server error (HTTP ${status})` : "no response";
     }
-    this.until = now + wait;
+    this.until = this.stopped ? 0 : now + wait;
     this.reason = reason;
-    this.loggedSkip = false;
-    console.warn(`[upstream] ${this.name} breaker open for ${Math.round(wait / 1000)}s: ${reason}`);
+    console.warn(
+      this.stopped
+        ? `[upstream] ${this.name} ${reason} for the 3rd time in a row: calls stopped until reset`
+        : `[upstream] ${this.name} paused for ${Math.round(wait / 1000)}s: ${reason}`,
+    );
+    this.changed();
+    return true;
   }
 }
 
 export function parseRetryAfter(value: string | null, now = Date.now()): number | null {
   if (!value) return null;
   const secs = Number(value);
-  if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, 24 * HOUR);
+  if (value.trim() !== "" && Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, DAY);
   const date = Date.parse(value);
-  if (!Number.isNaN(date)) return Math.max(0, Math.min(date - now, 24 * HOUR));
+  if (!Number.isNaN(date)) return Math.max(0, Math.min(date - now, DAY));
   return null;
 }
 

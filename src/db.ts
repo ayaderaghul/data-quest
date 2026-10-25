@@ -140,6 +140,26 @@ CREATE TABLE IF NOT EXISTS moon_events (
   PRIMARY KEY (user_id, cycle, kind)
 );
 
+-- Pauses for third-party APIs (see src/game/upstream.ts), kept across restarts.
+CREATE TABLE IF NOT EXISTS upstream_state (
+  name       TEXT PRIMARY KEY,
+  until      TIMESTAMPTZ,
+  failures   INT NOT NULL DEFAULT 0,
+  strikes    INT NOT NULL DEFAULT 0,
+  stopped    BOOLEAN NOT NULL DEFAULT false,
+  reason     TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- MET Norway responses with their Expires and Last-Modified, as their terms require.
+CREATE TABLE IF NOT EXISTS met_cache (
+  url           TEXT PRIMARY KEY,
+  reading       JSONB NOT NULL,
+  expires       TIMESTAMPTZ NOT NULL,
+  last_modified TEXT,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS encounters (
   id         BIGSERIAL PRIMARY KEY,
   user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
