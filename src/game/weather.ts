@@ -48,12 +48,19 @@ const breakers = {
 };
 export const upstreamStatus = () => Object.fromEntries(Object.values(breakers).map((b) => [b.name, b.status()]));
 
-const WEATHER_TTL = 30 * 60_000; // a reading is good for 30 minutes per ~10 km square
+const OPEN_METEO_TTL = 30 * 60_000; // Open-Meteo sends no Expires header; reuse a reading for 30 minutes
 const FAILURE_TTL = 2 * 60_000; // after every source failed for a place, wait 2 minutes before trying again
 const weatherCache = new TtlCache<Reading>();
 const failureCache = new TtlCache<Attempt[]>();
 const weatherInFlight = new InFlight<{ reading: Reading | null; attempts: Attempt[] }>();
 const cellKey = (lat: number, lon: number) => `${lat.toFixed(1)},${lon.toFixed(1)}`;
+
+interface CallResult {
+  reading: Reading | null;
+  attempt: Attempt;
+  expires: number | null; // from the Expires header, as epoch ms
+  lastModified: string | null;
+}
 
 /**
  * Every forecast call goes through here and is logged as one line, e.g.
@@ -63,10 +70,14 @@ const cellKey = (lat: number, lon: number) => `${lat.toFixed(1)},${lon.toFixed(1
  */
 async function call(
   breaker: Breaker, url: string, lat: number, lon: number, parse: (data: any) => Reading | null,
-): Promise<{ reading: Reading | null; attempt: Attempt }> {
+  opts: { headers?: Record<string, string>; notModified?: () => Reading | null } = {},
+): Promise<CallResult> {
   const source = breaker.name;
   if (breaker.isOpen()) {
-    return { reading: null, attempt: { source, ok: false, status: null, ms: 0, detail: `skipped: ${breaker.skipNote()}`, skipped: true } };
+    return {
+      reading: null, expires: null, lastModified: null,
+      attempt: { source, ok: false, status: null, ms: 0, detail: `skipped: ${breaker.skipNote()}`, skipped: true },
+    };
   }
   const t0 = Date.now();
   let status: number | null = null;
@@ -74,12 +85,20 @@ async function call(
   let detail = "";
   let retryAfter: string | null = null;
   let body = "";
+  let expires: number | null = null;
+  let lastModified: string | null = null;
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, { headers: { "User-Agent": UA, ...opts.headers }, signal: AbortSignal.timeout(5000) });
     status = res.status;
     retryAfter = res.headers.get("retry-after");
+    const exp = Date.parse(res.headers.get("expires") ?? "");
+    expires = Number.isNaN(exp) ? null : exp;
+    lastModified = res.headers.get("last-modified");
     body = await res.text();
-    if (!res.ok) {
+    if (res.status === 304 && opts.notModified) {
+      reading = opts.notModified();
+      detail = reading ? `not modified, reusing ${reading.weather}` : "304 without a stored reading";
+    } else if (!res.ok) {
       detail = body.slice(0, 160).replace(/\s+/g, " ");
     } else {
       reading = parse(JSON.parse(body));
@@ -92,19 +111,21 @@ async function call(
   if (reading) breaker.success();
   else breaker.failure(status, retryAfter, body);
   const attempt = { source, ok: !!reading, status, ms: Date.now() - t0, detail };
-  console.log(`[weather] ${source} ${status ?? "---"} ${attempt.ms}ms lat=${lat.toFixed(1)} lon=${lon.toFixed(1)} ${attempt.ok ? "OK" : "FAIL"} ${JSON.stringify(detail)}`);
-  return { reading, attempt };
+  const until = expires ? ` expires=${new Date(expires).toISOString().slice(11, 16)}Z` : "";
+  console.log(`[weather] ${source} ${status ?? "---"} ${attempt.ms}ms lat=${lat.toFixed(1)} lon=${lon.toFixed(1)} ${attempt.ok ? "OK" : "FAIL"}${until} ${JSON.stringify(detail)}`);
+  return { reading, attempt, expires, lastModified };
 }
 
 /** Primary source: Open-Meteo (WMO codes). Shared hosting IPs can hit its rate limit. */
-function fromOpenMeteo(lat: number, lon: number) {
+async function fromOpenMeteo(lat: number, lon: number): Promise<CallResult> {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}&current=temperature_2m,weather_code`;
-  return call(breakers.openMeteo, url, lat, lon, (data) => {
+  const r = await call(breakers.openMeteo, url, lat, lon, (data) => {
     const code = data?.current?.weather_code;
     if (typeof code !== "number") return null;
     const temp = data.current.temperature_2m;
     return { weather: weatherFromCode(code), code, temp: typeof temp === "number" ? temp : null, source: "open-meteo" };
   });
+  return { ...r, expires: r.reading ? Date.now() + OPEN_METEO_TTL : r.expires };
 }
 
 /** MET Norway symbol codes, e.g. "lightrainshowers_day", "heavysnowandthunder", "fog". */
@@ -118,43 +139,70 @@ export function weatherFromSymbol(symbol: string): Weather {
   return "cloudy";
 }
 
+/**
+ * What MET Norway last sent for each URL. Their terms of service ask clients to:
+ * - not request again before the Expires time of the previous response, and
+ * - send If-Modified-Since with the previous Last-Modified, accepting 304 Not Modified.
+ * Both are followed here. Entries are kept for a day so a stale-but-known reading can be revalidated.
+ */
+const metStore = new TtlCache<{ reading: Reading; expires: number; lastModified: string | null }>(200);
+const MET_DEFAULT_TTL = 30 * 60_000;
+
 /** Fallback source: MET Norway Locationforecast (global coverage; needs a real User-Agent). */
-function fromMetNo(lat: number, lon: number) {
-  const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
-  return call(breakers.metNo, url, lat, lon, (data) => {
+async function fromMetNo(lat: number, lon: number): Promise<CallResult> {
+  // Two decimals (~1 km) keeps the URL stable for a place, so caching and If-Modified-Since actually match.
+  const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(2)}&lon=${lon.toFixed(2)}`;
+  const stored = metStore.get(url);
+  if (stored && stored.expires > Date.now()) {
+    const until = new Date(stored.expires).toISOString().slice(11, 16);
+    return {
+      reading: stored.reading, expires: stored.expires, lastModified: stored.lastModified,
+      attempt: { source: "met.no", ok: true, status: null, ms: 0, detail: `${stored.reading.weather}, cached until Expires ${until} UTC (no request sent)` },
+    };
+  }
+  const r = await call(breakers.metNo, url, lat, lon, (data) => {
     const first = data?.properties?.timeseries?.[0]?.data;
     const symbol: string | undefined = first?.next_1_hours?.summary?.symbol_code ?? first?.next_6_hours?.summary?.symbol_code;
     if (!symbol) return null;
     const temp = first?.instant?.details?.air_temperature;
     return { weather: weatherFromSymbol(symbol), code: null, temp: typeof temp === "number" ? temp : null, source: "met.no" };
+  }, {
+    headers: stored?.lastModified ? { "If-Modified-Since": stored.lastModified } : {},
+    notModified: () => stored?.reading ?? null,
   });
+  if (r.reading) {
+    const expires = r.expires && r.expires > Date.now() ? r.expires : Date.now() + MET_DEFAULT_TTL;
+    metStore.set(url, { reading: r.reading, expires, lastModified: r.lastModified ?? stored?.lastModified ?? null }, 24 * 3600_000);
+    return { ...r, expires };
+  }
+  return r;
 }
 
 /**
  * Cached reading → recent total failure (no calls) → Open-Meteo → MET Norway.
- * Identical requests arriving together share one upstream call.
+ * A reading is reused until its source says it expires. Identical requests arriving together share one call.
  */
 function fetchCurrent(lat: number, lon: number): Promise<{ reading: Reading | null; attempts: Attempt[] }> {
   const key = cellKey(lat, lon);
   const cached = weatherCache.get(key);
   if (cached) return Promise.resolve({ reading: cached, attempts: [] });
   const failed = failureCache.get(key);
-  if (failed) {
-    return Promise.resolve({ reading: null, attempts: failed });
-  }
+  if (failed) return Promise.resolve({ reading: null, attempts: failed });
   return weatherInFlight.run(key, async () => {
     const a = await fromOpenMeteo(lat, lon);
-    const result = a.reading ? { reading: a.reading, attempts: [a.attempt] } : await (async () => {
-      const b = await fromMetNo(lat, lon);
-      return { reading: b.reading, attempts: [a.attempt, b.attempt] };
-    })();
-    if (result.reading) weatherCache.set(key, result.reading, WEATHER_TTL);
-    else failureCache.set(key, result.attempts, FAILURE_TTL);
-    return result;
+    const winner = a.reading ? a : await fromMetNo(lat, lon);
+    const attempts = winner === a ? [a.attempt] : [a.attempt, winner.attempt];
+    if (winner.reading) {
+      const ttl = Math.max(60_000, (winner.expires ?? Date.now() + OPEN_METEO_TTL) - Date.now());
+      weatherCache.set(key, winner.reading, ttl);
+    } else {
+      failureCache.set(key, attempts, FAILURE_TTL);
+    }
+    return { reading: winner.reading, attempts };
   });
 }
 
-/** Diagnostics: asks every source that isn't cooling down, skipping the caches. */
+/** Diagnostics: asks every source that isn't cooling down. MET Norway is still not asked before its Expires time. */
 export async function checkSources(lat: number, lon: number): Promise<Attempt[]> {
   const [a, b] = await Promise.all([fromOpenMeteo(lat, lon), fromMetNo(lat, lon)]);
   return [a.attempt, b.attempt];

@@ -361,7 +361,7 @@ async function screenTravel() {
     out.innerHTML = `<span class="pulse">Asking the sky...</span>`;
     try {
       const r = await api("/api/weather/check");
-      out.innerHTML = `<div>${esc(r.place)}</div>` + r.attempts.map((a) => `<div><span style="color:${a.ok ? "var(--green)" : "var(--red)"}">${a.ok ? "✓" : "✗"}</span> ${esc(a.source)} · ${a.status ?? "no response"} · ${a.ms}ms · ${esc(a.detail)}</div>`).join("");
+      out.innerHTML = `<div>${esc(r.place)}</div>` + r.attempts.map((a) => `<div><span style="color:${a.ok ? "var(--green)" : "var(--red)"}">${a.ok ? "✓" : "✗"}</span> ${esc(a.source)} · ${a.status ?? (a.skipped ? "skipped" : a.ok ? "cached" : "no response")} · ${a.ms}ms · ${esc(a.detail)}</div>`).join("");
     } catch (err) { out.textContent = err.message; }
   });
   document.getElementById("search").addEventListener("submit", async (e) => {
