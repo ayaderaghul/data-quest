@@ -14,26 +14,26 @@ export const CH1: Block[] = [
     },
     recall: {
       q: "A single disk dies, but users notice nothing. What happened?",
-      options: ["A fault that did not become a failure", "A failure without a fault", "A software fault", "Nothing happened at all"],
+      options: ["A fault that did not become a failure", "A failure that the users did not notice", "A software fault hidden by the cache", "A full outage that recovered by itself"],
       answer: 0,
       why: "The disk broke (a fault), but redundancy kept the system serving users, so there was no failure.",
     },
     quiz: [
       {
         q: "Why are software faults often more dangerous than hardware faults?",
-        options: ["They are correlated, so many nodes can fail at once", "They are always caused by humans", "Hardware never fails in practice", "Software faults can never be fixed"],
+        options: ["They are correlated, so many nodes can fail at once", "They are random, so they're hard to reproduce in tests", "They always corrupt data instead of crashing cleanly", "They can't be detected by any monitoring system"],
         answer: 0,
         why: "A bug is present on every node running that code, so the same trigger can take them all down together.",
       },
       {
         q: "Which change reduces human-error outages the most?",
-        options: ["Gradual rollouts with quick rollback", "Buying more disks", "Making the UI dark mode", "Removing monitoring to reduce noise"],
+        options: ["Gradual rollouts with quick rollback", "Requiring two people to approve every change", "Running every change at night when traffic is low", "Writing longer runbooks for the operators"],
         answer: 0,
         why: "If a bad change only reaches a few servers first and can be rolled back fast, a mistake stays small.",
       },
       {
         q: "What is the point of deliberately killing processes in production?",
-        options: ["To prove the fault-tolerance machinery really works", "To save electricity", "To speed up deploys", "To test the user interface"],
+        options: ["To prove the fault-tolerance machinery really works", "To measure how much load the servers can handle", "To clean up processes that leak memory over time", "To force the team to deploy more often"],
         answer: 0,
         why: "Fault handling that is never exercised tends to rot. Injecting faults keeps it tested.",
       },
@@ -44,8 +44,8 @@ export const CH1: Block[] = [
       ask: "What do you recommend?",
       choices: [
         { text: "Roll out config changes to a few servers first, with a quick way to roll back.", correct: true, feedback: "Right. A gradual rollout turns a human mistake into a small fault instead of a castle-wide failure." },
-        { text: "Buy RAID disks for every gate server.", correct: false, feedback: "The disks were fine. This was a human error that spread everywhere at once." },
-        { text: "Forbid all config changes forever.", correct: false, feedback: "That makes the castle impossible to maintain. Make change safe instead of forbidding it." },
+        { text: "Buy RAID disks for every gate server so that no single failure can take a gate down again.", correct: false, feedback: "The disks were fine. This was a human error that spread everywhere at once." },
+        { text: "Forbid all config changes until a full audit of every gate is done.", correct: false, feedback: "That makes the castle impossible to maintain. Make change safe instead of forbidding it." },
       ],
     },
   },
@@ -62,26 +62,26 @@ export const CH1: Block[] = [
     },
     recall: {
       q: "With fan-out on write, what becomes expensive?",
-      options: ["Posting, for users with many followers", "Reading your timeline", "Logging in", "Uploading a profile picture"],
+      options: ["Posting, for users with many followers", "Reading the timeline of an inactive user", "Following a new account with few posts", "Storing each user's list of followers"],
       answer: 0,
       why: "Each post is copied into every follower's timeline, so the cost grows with the follower count.",
     },
     quiz: [
       {
         q: "A service gets 300k timeline reads/sec but only 5k posts/sec. What suits most users?",
-        options: ["Precompute timelines at write time", "Merge everyone's posts on every read", "Keep timelines only in the browser", "Disable caching"],
+        options: ["Precompute timelines at write time", "Merge everyone's posts each time a timeline is read", "Store every timeline only in the user's browser", "Disable caching so reads are always fresh"],
         answer: 0,
         why: "Reads vastly outnumber writes, so doing work once per write and making reads cheap pays off.",
       },
       {
         q: "Why can one celebrity break fan-out on write?",
-        options: ["One post triggers millions of timeline writes", "Celebrities read more often", "Their posts are longer", "They use more devices"],
+        options: ["One post triggers millions of timeline writes", "Celebrities read their timelines far more often", "Their posts contain more media to store", "Their followers refresh the page more often"],
         answer: 0,
         why: "The work per post is proportional to the follower count.",
       },
       {
         q: "Which is NOT a typical load parameter?",
-        options: ["The programming language used", "Requests per second", "Read/write ratio", "Simultaneously active users"],
+        options: ["The programming language used", "Requests per second", "Read/write ratio", "Number of simultaneously active users"],
         answer: 0,
         why: "Load parameters describe the work arriving at the system, not how it is implemented.",
       },
@@ -92,8 +92,8 @@ export const CH1: Block[] = [
       ask: "How do you fix it?",
       choices: [
         { text: "Hybrid: fan out for normal posters, fetch the mayor's posts at read time and merge them in.", correct: true, feedback: "Exactly. Huge accounts are handled on read, everyone else on write." },
-        { text: "Switch everyone to merge-on-read.", correct: false, feedback: "Reads are far more frequent than posts. Every timeline load would become expensive." },
-        { text: "Ask the mayor to post less.", correct: false, feedback: "The system should handle its load, not ration its users." },
+        { text: "Switch everyone to merge-on-read, so posting is cheap for all users.", correct: false, feedback: "Reads are far more frequent than posts. Every timeline load would become expensive." },
+        { text: "Ask the mayor to post less often, and only in the quiet hours.", correct: false, feedback: "The system should handle its load, not ration its users." },
       ],
     },
   },
@@ -117,7 +117,7 @@ export const CH1: Block[] = [
     quiz: [
       {
         q: "p99 = 1.5s means:",
-        options: ["99% of requests finish in under 1.5s", "1% of requests finish in under 1.5s", "The average is 1.5s", "The slowest request takes 1.5s"],
+        options: ["99% of requests finish in under 1.5s", "1% of requests take exactly 1.5s or more", "The average request takes about 1.5s", "The slowest request ever measured took 1.5s"],
         answer: 0,
         why: "The 99th percentile is the value that 99% of requests are faster than.",
       },
@@ -129,7 +129,7 @@ export const CH1: Block[] = [
       },
       {
         q: "Why measure latency on the client side?",
-        options: ["It includes queueing delay before the server starts", "Servers cannot measure time", "Clients have better clocks", "It is cheaper"],
+        options: ["It includes queueing delay before the server starts", "Server clocks drift too much to be trusted for latency", "Client devices have more accurate monotonic clocks", "It moves the measurement cost off the servers"],
         answer: 0,
         why: "A request can wait in a queue long before the server's own timer starts.",
       },
@@ -140,8 +140,8 @@ export const CH1: Block[] = [
       ask: "Who is right?",
       choices: [
         { text: "Both. The mean hides a slow tail, so chart p95 and p99 too.", correct: true, feedback: "Yes. A small fraction of very slow requests barely moves the average." },
-        { text: "The dashboard. Averages don't lie.", correct: false, feedback: "Averages hide the shape of the distribution, including the slow tail." },
-        { text: "The patrons are imagining it.", correct: false, feedback: "If users feel it, it's in your tail latency." },
+        { text: "The dashboard. An 80ms average means almost every lookup is fast.", correct: false, feedback: "Averages hide the shape of the distribution, including the slow tail." },
+        { text: "The patrons. The dashboard must be measuring the wrong server.", correct: false, feedback: "The dashboard is probably right about the mean; the mean is the wrong number to watch." },
       ],
     },
   },
@@ -165,7 +165,7 @@ export const CH1: Block[] = [
     quiz: [
       {
         q: "Accidental complexity is...",
-        options: ["Complexity from the implementation, not the problem", "Complexity added by mistake in requirements", "Any complexity in a distributed system", "The complexity of the business domain"],
+        options: ["Complexity from the implementation, not the problem", "Complexity added by unclear or changing requirements", "Any complexity caused by running on many machines", "The complexity inherent in the business domain"],
         answer: 0,
         why: "It is the complexity you could remove without changing what the system does.",
       },
@@ -188,8 +188,8 @@ export const CH1: Block[] = [
       ask: "What should we do?",
       choices: [
         { text: "Automate the restart, document it, and add monitoring so anyone on call can handle it.", correct: true, feedback: "That's operability: routine tasks become easy and safe for anyone." },
-        { text: "Give the old engineer a raise and hope he never leaves.", correct: false, feedback: "Knowledge locked in one head is a fault waiting to become a failure." },
-        { text: "Rewrite the treasury in a new language this week.", correct: false, feedback: "A rushed rewrite adds risk without fixing the operational gap." },
+        { text: "Give the old engineer a raise and ask him to train an apprentice someday.", correct: false, feedback: "Knowledge locked in one head is a fault waiting to become a failure." },
+        { text: "Rewrite the whole treasury in a new language so it never needs restarting.", correct: false, feedback: "A rushed rewrite adds risk without fixing the operational gap." },
       ],
     },
   },

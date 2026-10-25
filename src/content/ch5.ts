@@ -15,26 +15,26 @@ export const CH5: Block[] = [
     },
     recall: {
       q: "In leader-based replication, writes go to:",
-      options: ["Only the leader", "Any follower", "All nodes in parallel from the client", "The newest node"],
+      options: ["Only the leader", "Any follower", "The nearest replica", "All replicas at once"],
       answer: 0,
       why: "A single writer is what keeps the order consistent.",
     },
     quiz: [
       {
         q: "Which is NOT a usual reason to replicate?",
-        options: ["To make every single write faster", "To survive a machine failure", "To read from a nearby copy", "To spread read load"],
+        options: ["To make every single write faster", "To keep serving if a machine dies", "To read from a copy close to users", "To spread read load over machines"],
         answer: 0,
         why: "Replication helps availability and reads; writes still go through the leader.",
       },
       {
         q: "How does a brand-new follower catch up?",
-        options: ["Restore a snapshot, then replay the log from that point", "Copy files while writes continue, with no log", "Ask users to resend data", "Start empty and wait"],
+        options: ["Restore a snapshot, then replay the log from that point", "Copy the data files while the leader keeps accepting writes", "Ask clients to resend everything they wrote since yesterday", "Start empty and wait for keys to be written again"],
         answer: 0,
         why: "The snapshot's log position tells it where to resume.",
       },
       {
         q: "Followers apply changes:",
-        options: ["In the same order the leader wrote them", "In random order", "Alphabetically by key", "Whenever a user reads"],
+        options: ["In the same order the leader wrote them", "In whatever order the packets happen to arrive", "Sorted by key so lookups stay fast", "Grouped by client so each user's writes stay together"],
         answer: 0,
         why: "Same order means every replica ends up in the same state.",
       },
@@ -45,8 +45,8 @@ export const CH5: Block[] = [
       ask: "What do you propose?",
       choices: [
         { text: "Keep the capital as leader and add read-only follower copies in the provinces.", correct: true, feedback: "Faster local reads and a copy that survives the fire." },
-        { text: "Let every province keep its own ledger with no syncing.", correct: false, feedback: "Balances would disagree within a day." },
-        { text: "Build one bigger ledger in the capital.", correct: false, feedback: "Still one copy, and still far away." },
+        { text: "Let every province keep its own ledger and settle up with the capital once a year at the harvest festival.", correct: false, feedback: "Balances would disagree within a day." },
+        { text: "Build one bigger ledger in the capital with more clerks to read it out.", correct: false, feedback: "Still one copy, and still far away." },
       ],
     },
   },
@@ -63,26 +63,26 @@ export const CH5: Block[] = [
     },
     recall: {
       q: "With async replication, a confirmed write can be lost when:",
-      options: ["The leader fails before followers receive it", "A follower is added", "A client reads it", "The network is fast"],
+      options: ["The leader fails before followers receive it", "A new follower is added while it's in flight", "Another client reads it from a follower", "The network is fast and nothing goes wrong"],
       answer: 0,
       why: "The client got 'done' while the write still existed only on the leader.",
     },
     quiz: [
       {
         q: "Semi-synchronous replication means:",
-        options: ["One follower is sync, the others async", "Half the writes are sync", "Sync only at night", "Followers take turns leading"],
+        options: ["One follower is sync, the others async", "Every other write is replicated synchronously", "Followers sync at night and run async by day", "Followers take turns acting as the leader"],
         answer: 0,
         why: "It guarantees two current copies without one slow node blocking all writes.",
       },
       {
         q: "Split brain is:",
-        options: ["Two nodes both believing they are the leader", "A follower lagging behind", "A network that's too slow", "Splitting data into partitions"],
+        options: ["Two nodes both believing they are the leader", "A follower falling far behind the leader", "The network splitting the cluster into halves", "A leader writing to two partitions at once"],
         answer: 0,
         why: "Both accept writes, so the data diverges.",
       },
       {
         q: "Why not make every follower synchronous?",
-        options: ["Any one slow or dead follower would block all writes", "It uses too much disk", "It is illegal", "Followers can't confirm"],
+        options: ["Any one slow or dead follower would block all writes", "It would use far more disk space on each follower", "Synchronous replication is only allowed between datacenters", "Followers can't send confirmations back to the leader"],
         answer: 0,
         why: "Availability of writes would depend on the slowest node.",
       },
@@ -93,7 +93,7 @@ export const CH5: Block[] = [
       ask: "What should we fix?",
       choices: [
         { text: "Fence off the old leader so it can't accept writes, and keep one sync follower for failover.", correct: true, feedback: "Prevents split brain and keeps a fully current copy ready." },
-        { text: "Let both leaders run and merge the data by hand later.", correct: false, feedback: "Manual merges of diverged data are slow and error-prone." },
+        { text: "Let both leaders run and merge their records by hand at the end of the week.", correct: false, feedback: "Manual merges of diverged data are slow and error-prone." },
         { text: "Never fail over; wait for the old leader to be repaired.", correct: false, feedback: "That turns every crash into downtime." },
       ],
     },
@@ -111,26 +111,26 @@ export const CH5: Block[] = [
     },
     recall: {
       q: "A read from a lagging follower may return:",
-      options: ["Stale (old) data", "An error every time", "Data from the future", "Nothing"],
+      options: ["Stale (old) data", "An error every time", "Data that isn't written yet", "Nothing at all"],
       answer: 0,
       why: "The follower hasn't applied the latest writes yet.",
     },
     quiz: [
       {
         q: "Follower B is 3s behind. A client writes v=42 to the leader, then reads from B right away. It sees:",
-        options: ["The old value", "v=42", "An error", "The read waits until B catches up"],
+        options: ["The old value", "v=42, the new value", "An error saying the data is stale", "It waits until the follower catches up"],
         answer: 0,
         why: "B hasn't applied the write, and async followers don't block reads.",
       },
       {
         q: "Replication lag usually grows when:",
-        options: ["The system is overloaded or the network is slow", "Users log out", "The disk is empty", "Writes stop"],
+        options: ["The system is overloaded or the network is slow", "Users log out and their sessions are cleaned up", "The disk on the follower is almost empty", "Writes stop arriving at the leader"],
         answer: 0,
         why: "Followers can't keep up with the change stream.",
       },
       {
         q: "Eventual consistency guarantees:",
-        options: ["Replicas converge if writes stop, with no time bound", "Reads always see the latest write", "Lag is under one second", "Writes never conflict"],
+        options: ["Replicas converge if writes stop, with no time bound", "Every read returns the latest write within one second", "Replication lag never exceeds a configured limit", "Concurrent writes can never conflict with each other"],
         answer: 0,
         why: "It's a promise about the end state, not about timing.",
       },
@@ -141,8 +141,8 @@ export const CH5: Block[] = [
       ask: "What do you tell her?",
       choices: [
         { text: "Her refresh hit a lagging follower. Read her own orders from the leader for a minute after she writes.", correct: true, feedback: "Right. That's the read-your-writes fix you'll meet in 5.4." },
-        { text: "The leader lost her write. Restart it.", correct: false, feedback: "The write is safe on the leader. The follower just hadn't caught up." },
-        { text: "Switch every follower to synchronous replication.", correct: false, feedback: "One slow follower would then block every write in the bakery." },
+        { text: "The leader lost her write. Restart it and ask her to order again.", correct: false, feedback: "The write is safe on the leader. The follower just hadn't caught up." },
+        { text: "Switch every follower to synchronous replication so nobody ever sees old data again.", correct: false, feedback: "One slow follower would then block every write in the bakery." },
       ],
     },
   },
@@ -159,20 +159,20 @@ export const CH5: Block[] = [
     },
     recall: {
       q: "Always routing a user to the same replica guarantees:",
-      options: ["Monotonic reads", "Read-your-writes", "Linearizability", "No replication lag"],
+      options: ["Monotonic reads", "Read-your-writes", "Linearizability", "Consistent prefix reads"],
       answer: 0,
       why: "One replica only moves forward, so the user never sees time go backwards.",
     },
     quiz: [
       {
         q: "A comment appears, then disappears on the next refresh. Which guarantee broke?",
-        options: ["Monotonic reads", "Read-your-writes", "Consistent prefix", "Durability"],
+        options: ["Monotonic reads", "Read-your-writes", "Consistent prefix reads", "Durability"],
         answer: 0,
         why: "The second read came from a replica further behind than the first.",
       },
       {
         q: "A fix for read-your-writes is:",
-        options: ["Read data the user may have edited from the leader", "Add more followers", "Disable caching", "Use a CDN"],
+        options: ["Read data the user may have edited from the leader", "Add more followers so one is more likely to be fresh", "Disable the browser cache on every page", "Serve the user's pages from a CDN near them"],
         answer: 0,
         why: "The leader always has the user's own latest writes.",
       },
@@ -190,7 +190,7 @@ export const CH5: Block[] = [
       choices: [
         { text: "Causally related writes were read out of order. Keep them on the same partition so they stay in order.", correct: true, feedback: "That's how you get consistent prefix reads." },
         { text: "Tom should post faster.", correct: false, feedback: "He posted first. The reads were out of order." },
-        { text: "Add more followers.", correct: false, feedback: "More replicas give more chances to read out of order." },
+        { text: "Add more followers so every reader gets a fresher copy of the messages.", correct: false, feedback: "More replicas give more chances to read out of order." },
       ],
     },
   },
@@ -207,26 +207,26 @@ export const CH5: Block[] = [
     },
     recall: {
       q: "The main new problem in multi-leader replication is:",
-      options: ["Write conflicts", "Slower reads", "No backups", "Too few replicas"],
+      options: ["Write conflicts", "Slower reads", "No way to back up", "Too few replicas"],
       answer: 0,
       why: "Two places can change the same record concurrently.",
     },
     quiz: [
       {
         q: "A calendar app that works offline on each device is effectively:",
-        options: ["Multi-leader", "Single-leader", "Leaderless with quorums", "Not replicated"],
+        options: ["Multi-leader", "Single-leader", "Leaderless with quorums", "Not replicated at all"],
         answer: 0,
         why: "Each device accepts writes locally and syncs later.",
       },
       {
         q: "An advantage of one leader per datacenter is:",
-        options: ["Writes go to a nearby leader and survive a datacenter outage", "Conflicts become impossible", "No network is needed", "Reads are always fresh"],
+        options: ["Writes go to a nearby leader and survive a datacenter outage", "Conflicts become impossible because each region has its own data", "Reads always see the latest write from every region", "No network link between the datacenters is needed any more"],
         answer: 0,
         why: "Local writes are fast; other regions keep working if one fails.",
       },
       {
         q: "Inside a single datacenter, multi-leader is usually:",
-        options: ["Not worth the complexity", "Required", "Faster than everything", "The default"],
+        options: ["Not worth the complexity", "Required for fault tolerance", "Faster than any other setup", "The default in most databases"],
         answer: 0,
         why: "Its benefits come from distance and disconnection.",
       },
@@ -237,7 +237,7 @@ export const CH5: Block[] = [
       ask: "How should we replicate?",
       choices: [
         { text: "A leader in each castle, syncing with each other, plus a conflict strategy.", correct: true, feedback: "Local writes, survives the sea route failing. Just plan for conflicts." },
-        { text: "One leader in Castelfranco; Hai Phong waits for the sea route.", correct: false, feedback: "Hai Phong can't write whenever the link is down." },
+        { text: "One leader in Castelfranco; Hai Phong waits until the sea route is repaired before writing anything.", correct: false, feedback: "Hai Phong can't write whenever the link is down." },
         { text: "Two separate databases that never sync.", correct: false, feedback: "Then they're two kingdoms, not one." },
       ],
     },
@@ -255,26 +255,26 @@ export const CH5: Block[] = [
     },
     recall: {
       q: "Last write wins risks:",
-      options: ["Silently losing concurrent writes", "Crashing the leader", "Never converging", "Duplicating every record"],
+      options: ["Silently losing concurrent writes", "Crashing the leader that lost", "Replicas never agreeing again", "Duplicating every record"],
       answer: 0,
       why: "Only one of the concurrent writes survives.",
     },
     quiz: [
       {
         q: "The simplest way to avoid conflicts is to:",
-        options: ["Send all writes for a record to one home leader", "Add more leaders", "Use bigger disks", "Disable writes"],
+        options: ["Send all writes for a record to one home leader", "Add more leaders so each one handles fewer writes", "Compare timestamps and keep the most recent write", "Pause writes to a record while anyone is reading it"],
         answer: 0,
         why: "If one leader owns the record, there's nothing concurrent to resolve.",
       },
       {
         q: "CRDTs are:",
-        options: ["Data structures that merge concurrent changes automatically", "A kind of disk", "Consensus algorithms", "Encryption keys"],
+        options: ["Data structures that merge concurrent changes automatically", "A consensus algorithm used to elect a single leader", "Encryption keys shared between the leaders", "A log format for replicating writes between regions"],
         answer: 0,
         why: "They're designed so that merging in any order gives the same result.",
       },
       {
         q: "Two users rename a wiki page to 'B' and 'C' at the same time. With LWW:",
-        options: ["One edit is kept, the other silently lost", "Both titles are kept", "The page is deleted", "Users are asked to choose"],
+        options: ["One edit is kept, the other silently lost", "Both titles are kept, joined together", "The page is reverted to its old title", "Both users are asked to choose one"],
         answer: 0,
         why: "The later timestamp wins and the other write disappears.",
       },
@@ -285,7 +285,7 @@ export const CH5: Block[] = [
       ask: "How do we stop this happening again?",
       choices: [
         { text: "Give each item's stock one home leader so sales can't conflict.", correct: true, feedback: "Conflict avoidance: the simplest strategy that works." },
-        { text: "Last write wins: whoever's timestamp is later.", correct: false, feedback: "One customer paid for figs that silently vanish from the record." },
+        { text: "Last write wins: whoever's timestamp is later keeps the figs, the other sale disappears.", correct: false, feedback: "One customer paid for figs that silently vanish from the record." },
         { text: "Ignore it; figs are cheap.", correct: false, feedback: "Next time it's the last horse." },
       ],
     },
@@ -316,7 +316,7 @@ export const CH5: Block[] = [
       },
       {
         q: "Read repair means:",
-        options: ["A reader that sees a stale replica writes the newer value back", "Restarting the database", "Deleting stale data", "A background job that rebuilds indexes"],
+        options: ["A reader that sees a stale replica writes the newer value back", "A background job that compares every replica once a night", "Deleting a stale replica and rebuilding it from scratch", "Asking the client to retry the read on a different replica"],
         answer: 0,
         why: "It fixes stale replicas as a side effect of reads.",
       },
@@ -333,7 +333,7 @@ export const CH5: Block[] = [
       ask: "What should we change?",
       choices: [
         { text: "Write to two towers and read from two, so w + r > n.", correct: true, feedback: "Now every read overlaps with the latest write." },
-        { text: "Keep w=1, r=1 but use faster horses.", correct: false, feedback: "Speed doesn't fix non-overlapping sets." },
+        { text: "Keep writing to one tower and reading from one, but use faster horses between them.", correct: false, feedback: "Speed doesn't fix non-overlapping sets." },
         { text: "Use only one tower.", correct: false, feedback: "Then losing that tower loses the census." },
       ],
     },

@@ -17,7 +17,7 @@ Random events keep it interesting:
 - **Moon calendar**: at full moon a wolf gives a 5-question shortcut test (pick the memory anchor that cracks each question; big rewards). At new moon a fairy gives a step-ordering puzzle and a proverb (mostly Italian).
 - **Wild encounters** on the map: mystics (riddles), beasts (3-question fights), wandering elves (gem trades) and rival knights (speed duels).
 
-Chapters 1–5 are playable; 6–12 are on the map as "coming soon".
+All 12 chapters are playable: 63 building blocks, each with a card, a recall check, a 3-question quiz and a scenario, plus a boss per chapter.
 
 ## Third-party services
 
@@ -77,10 +77,11 @@ The schema is created automatically on start.
 ## Checks
 
 ```bash
-npm run check                                   # validates content and prerequisite graph
+npm run check                                   # validates content, prerequisite graph, and that "pick the longest answer" doesn't win
 INVITE=DQ-... node test/smoke.mjs               # end-to-end test against a running server (fresh DB)
 node test/moon.mjs                              # location, teleport, wolf (server with DEV_MOON=full)
 MODE=new node test/moon.mjs                     # fairy (server with DEV_MOON=new)
+node test/fullrun.mjs                           # plays all 12 chapters and bosses (after smoke.mjs)
 node test/upstream.mjs                          # back-off rules for the weather and geocoding APIs
 node test/metno.mjs                             # MET Norway Expires / If-Modified-Since (fake fetch, no network)
 node test/restart.mjs                           # pauses and MET entries survive a restart (fake store)

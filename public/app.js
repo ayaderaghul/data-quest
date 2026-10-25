@@ -110,22 +110,30 @@ function heroSvg(items, rank, size = 84) {
   const has = (id) => items.includes(id);
   const tunic = rank === "Peasant" ? "#8a6a4a" : rank === "Squire" ? "#4f7cff" : "#3b5bd6";
   let s = "";
+  // Capes, from grandest to humblest; only one is worn.
   if (has("royal-cape")) s += R(2, 5, 8, 9, "#b0413e");
+  else if (has("gear-11")) s += R(1, 5, 10, 9, "#3a6ea5") + R(1, 13, 10, 1, "#5ee6eb");
+  else if (has("gear-8")) s += R(2, 5, 8, 9, "#2d2050");
   else if (has("wolf-pelt")) s += R(2, 5, 8, 7, "#9aa3b8");
   if (has("gear-1")) s += R(3, 1, 6, 4, "#c0c7d6") + R(4, 3, 4, 1, "#14142e");
   else s += R(4, 1, 4, 4, "#f2c9a0") + R(4, 1, 4, 1, "#5a3a22") + R(5, 3, 1, 1, "#14142e") + R(7, 3, 1, 1, "#14142e");
   if (has("plume")) s += R(5, 0, 3, 1, "#ff6b8a");
-  if (rank === "King") s += R(4, 0, 4, 1, "#f7c548");
+  if (has("gear-12")) s += R(3, 0, 6, 1, "#f7c548") + R(5, 0, 2, 1, "#ff6b8a");
+  else if (rank === "King") s += R(4, 0, 4, 1, "#f7c548");
   s += R(3, 5, 6, 6, tunic) + R(2, 6, 1, 4, tunic) + R(9, 6, 1, 4, tunic);
   if (has("gold-trim")) s += R(3, 5, 6, 1, "#f7c548") + R(5, 6, 2, 3, "#f7c548");
   if (has("frost-scarf")) s += R(4, 5, 4, 1, "#5ee6eb") + R(4, 6, 1, 2, "#5ee6eb");
+  if (has("gear-7")) s += R(3, 6, 6, 3, "#c0c7d6") + R(5, 7, 2, 1, "#f7c548");
   if (has("gear-5")) s += R(1, 5, 3, 2, "#e8ecf5") + R(8, 5, 3, 2, "#e8ecf5");
   s += has("gear-2") ? R(2, 10, 1, 1, "#6b3fa0") + R(9, 10, 1, 1, "#6b3fa0") : R(2, 10, 1, 1, "#f2c9a0") + R(9, 10, 1, 1, "#f2c9a0");
+  if (has("gear-10")) s += R(2, 8, 1, 2, "#9aa3b8") + R(9, 8, 1, 2, "#9aa3b8");
   s += R(3, 10, 6, 1, has("gear-4") ? "#f7c548" : "#5a3a22");
   s += R(4, 11, 1, 3, "#8a5a3b") + R(7, 11, 1, 3, "#8a5a3b");
   s += has("gear-3") ? R(3, 14, 2, 2, "#6b6b9a") + R(7, 14, 2, 2, "#6b6b9a") : R(4, 14, 1, 1, "#3a2a1a") + R(7, 14, 1, 1, "#3a2a1a");
-  s += rank === "Peasant" ? R(11, 3, 1, 9, "#8a5a3b") : R(11, 2, 1, 8, "#e8ecf5") + R(10, 9, 2, 1, "#f7c548");
-  if (has("lightning-rod")) s += R(0, 2, 1, 9, "#c0c7d6") + R(0, 1, 1, 1, "#f7c548");
+  if (has("gear-9")) s += R(11, 1, 1, 9, "#5ee6eb") + R(10, 9, 2, 1, "#f7c548") + R(11, 10, 1, 1, "#b0413e");
+  else s += rank === "Peasant" ? R(11, 3, 1, 9, "#8a5a3b") : R(11, 2, 1, 8, "#e8ecf5") + R(10, 9, 2, 1, "#f7c548");
+  if (has("gear-6")) s += R(0, 6, 2, 4, "#3a6ea5") + R(0, 7, 2, 1, "#f7c548");
+  else if (has("lightning-rod")) s += R(0, 2, 1, 9, "#c0c7d6") + R(0, 1, 1, 1, "#f7c548");
   else if (has("fairy-lantern")) s += R(0, 9, 2, 2, "#f7c548") + R(0, 8, 1, 1, "#c9b8ff");
   return svg("0 0 12 16", size, Math.round(size * 16 / 12), s, `Your ${rank}`);
 }
@@ -204,6 +212,8 @@ const SERVICE_NAMES = {
 
 const ITEM_NAMES = {
   "gear-1": "Reliability Helm", "gear-2": "Schema Gloves", "gear-3": "B-Tree Boots", "gear-4": "Encoding Belt", "gear-5": "Follower's Pauldrons",
+  "gear-6": "Shard Shield", "gear-7": "ACID Breastplate", "gear-8": "Clockless Cloak", "gear-9": "Raft Blade",
+  "gear-10": "MapReduce Gauntlets", "gear-11": "Stream Cape", "gear-12": "Crown of Unbundling",
   plume: "Red Plume", "gold-trim": "Gold Trim", "royal-cape": "Royal Cape", "lightning-rod": "Lightning Rod", "frost-scarf": "Frost Scarf",
   "wyrm-scale": "Wyrm Scale", "mystic-orb": "Mystic Orb", "rival-pennant": "Rival's Pennant", "wolf-pelt": "Wolf Pelt", "fairy-lantern": "Fairy Lantern",
 };
@@ -459,7 +469,7 @@ async function screenMoon(offset = 0) {
 function proverbBox(p) {
   return `<div class="paper"><div class="label" style="color:#6b3fa0">THE FAIRY'S PROVERB</div>
     <div style="font-size:23px;margin-top:6px"><i>${esc(p.text)}</i></div>
-    ${p.lang === "it" ? `<div class="small" style="margin-top:4px">"${esc(p.meaning)}"</div>` : ""}
+    ${p.lang !== "en" ? `<div class="small" style="margin-top:4px">"${esc(p.meaning)}"</div>` : ""}
     <div class="small" style="margin-top:8px">${esc(p.why)}</div></div>`;
 }
 

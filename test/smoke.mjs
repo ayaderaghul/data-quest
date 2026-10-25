@@ -1,6 +1,6 @@
 // End-to-end smoke test against a running server.
 // Usage: BASE=http://localhost:3999 INVITE=DQ-... node test/smoke.mjs
-import { BLOCKS, getQuestion } from "../dist/content/index.js";
+import { BLOCKS, RIVALS, getQuestion } from "../dist/content/index.js";
 
 const BASE = process.env.BASE ?? "http://localhost:3999";
 let cookie = "";
@@ -128,7 +128,7 @@ await call("/api/runs", { kind: "duel", rivalId: "nines" }, { expect: 403 });
 ok(true, "only one duel per rival per day");
 
 const lb = await call("/api/leaderboard");
-ok(lb.rows.length === 9 && lb.rows.some((r) => r.you && r.gold === expectGold), "leaderboard has 8 rivals + you with your minted gold");
+ok(lb.rows.length === RIVALS.length + 1 && lb.rows.some((r) => r.you && r.gold === expectGold), `leaderboard has ${RIVALS.length} rivals + you with your minted gold`);
 
 await call("/api/shop/buy", { item: "plume" }, { expect: 403 });
 ok(true, "can't afford the plume yet");

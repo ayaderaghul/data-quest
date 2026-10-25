@@ -6,7 +6,7 @@ export interface FairyPuzzle {
   title: string;
   prompt: string;
   steps: string[];
-  proverb: { text: string; lang: "it" | "en"; meaning: string; why: string };
+  proverb: { text: string; lang: "it" | "en" | "la"; meaning: string; why: string };
 }
 
 export const FAIRY_PUZZLES: FairyPuzzle[] = [
@@ -128,6 +128,111 @@ export const FAIRY_PUZZLES: FairyPuzzle[] = [
       text: "L'unione fa la forza.", lang: "it",
       meaning: "Unity makes strength.",
       why: "No single replica is trusted alone. Overlapping quorums together find the latest value.",
+    },
+  },
+  {
+    id: "newtower", chapter: 6, title: "A New Tower Joins",
+    prompt: "A new node joins a cluster that uses a fixed number of partitions. Put the steps of rebalancing in order.",
+    steps: [
+      "Create many more partitions than nodes up front",
+      "A new node joins the cluster",
+      "It takes over a few whole partitions from the others",
+      "Update the routing map so requests find the new owner",
+    ],
+    proverb: {
+      text: "Many hands make light work.", lang: "en",
+      meaning: "Sharing a task makes it easy.",
+      why: "Moving whole partitions spreads the load without reshuffling every key.",
+    },
+  },
+  {
+    id: "lockedcounter", chapter: 7, title: "The Careful Counter",
+    prompt: "Two clerks update the same tally. Order the steps that stop a lost update.",
+    steps: [
+      "Begin a transaction",
+      "Read the row with SELECT ... FOR UPDATE",
+      "Compute the new value",
+      "Write it and commit, releasing the lock",
+    ],
+    proverb: {
+      text: "Too many cooks spoil the broth.", lang: "en",
+      meaning: "Too many people working on the same thing at once ruin it.",
+      why: "Concurrent read-modify-write cycles spoil the data unless one waits for the other.",
+    },
+  },
+  {
+    id: "fencing", chapter: 8, title: "The Sleeping Steward Returns",
+    prompt: "An old leader wakes from a long pause. Order what happens when fencing tokens are used.",
+    steps: [
+      "The lock service grants a new lease with token 34",
+      "The old leader wakes up still holding token 33",
+      "The old leader tries to write with token 33",
+      "Storage rejects it, having already seen token 34",
+    ],
+    proverb: {
+      text: "L'abito non fa il monaco.", lang: "it",
+      meaning: "The habit doesn't make the monk.",
+      why: "Holding an old key doesn't make you the leader. The token decides.",
+    },
+  },
+  {
+    id: "twophase", chapter: 9, title: "The Council's Vote",
+    prompt: "Three guilds must all commit a joint purchase, or none. Order the steps of two-phase commit.",
+    steps: [
+      "The coordinator asks every participant to prepare",
+      "Each participant votes yes and promises to commit",
+      "The coordinator writes the commit decision to its log",
+      "The coordinator tells everyone to commit",
+    ],
+    proverb: {
+      text: "Tra il dire e il fare c'è di mezzo il mare.", lang: "it",
+      meaning: "Between saying and doing lies the sea.",
+      why: "Between voting yes and actually committing, a crashed coordinator can leave everyone waiting.",
+    },
+  },
+  {
+    id: "mapreduce", chapter: 10, title: "A Thousand Ledgers",
+    prompt: "Total sales per product across a thousand towns. Order the steps of the MapReduce job.",
+    steps: [
+      "Mappers read input blocks where they are stored",
+      "Mappers emit (product, amount) pairs",
+      "The shuffle sorts and groups the pairs by product",
+      "Reducers add up the amounts for each product",
+    ],
+    proverb: {
+      text: "Divide et impera.", lang: "la",
+      meaning: "Divide and conquer.",
+      why: "Split the work across many machines, then combine the pieces by key.",
+    },
+  },
+  {
+    id: "cdc", chapter: 11, title: "The Faithful Index",
+    prompt: "A book is added to the catalogue. Order how change data capture brings it to the search index.",
+    steps: [
+      "A row changes in the database",
+      "The change is appended to the replication log",
+      "The change stream delivers it to consumers in order",
+      "The search index applies the change",
+    ],
+    proverb: {
+      text: "La goccia scava la pietra.", lang: "it",
+      meaning: "The drop carves the stone.",
+      why: "A steady stream of small changes keeps every derived view in shape.",
+    },
+  },
+  {
+    id: "endtoend", chapter: 12, title: "The Sealed Order",
+    prompt: "A payment request is retried after a timeout. Order the steps that keep it from being paid twice.",
+    steps: [
+      "The client creates a unique request ID",
+      "The client sends the payment with that ID",
+      "The reply is lost, so the client retries with the same ID",
+      "The server sees the ID was already processed and returns the first result",
+    ],
+    proverb: {
+      text: "Patti chiari, amicizia lunga.", lang: "it",
+      meaning: "Clear agreements make long friendships.",
+      why: "A request ID agreed end to end means nobody gets paid twice and nobody argues.",
     },
   },
 ];
