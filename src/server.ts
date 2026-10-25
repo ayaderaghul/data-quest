@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { migrate, pool, tx } from "./db.js";
 import { authRateLimit, login, logout, register, registrationOpen, requireAuth, type AuthedRequest } from "./auth.js";
 import { CHAPTERS, REGIONS, RIVALS } from "./content/index.js";
-import { checkSources, getDailyEvent, placeName, searchPlaces, setLocation, TELEPORT_COST, WEATHER_INFO } from "./game/weather.js";
+import { checkSources, upstreamStatus, getDailyEvent, placeName, searchPlaces, setLocation, TELEPORT_COST, WEATHER_INFO } from "./game/weather.js";
 import { moonView, solveFairy } from "./game/moonEvents.js";
 import { ITEMS, chapterSummary, heroSummary, loadState, studiedBlocks } from "./game/state.js";
 import { GameError, HINT_COST, answerRun, createRun, serveRun, useHint } from "./game/runs.js";
@@ -133,7 +133,7 @@ app.get("/api/weather/check", wrap(async (req, res) => {
   const u = await pool.query("SELECT lat, lon, place FROM users WHERE id = $1", [req.userId!]);
   const { lat, lon, place } = u.rows[0];
   const la = lat ?? 45.672, lo = lon ?? 11.927;
-  res.json({ place: lat === null ? "Castelfranco Veneto (default)" : place, attempts: await checkSources(la, lo) });
+  res.json({ place: lat === null ? "Castelfranco Veneto (default)" : place, attempts: await checkSources(la, lo), breakers: upstreamStatus() });
 }));
 
 // ---------- moon ----------

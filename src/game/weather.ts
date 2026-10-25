@@ -1,5 +1,6 @@
 import type { Db } from "../db.js";
 import { localDay } from "./util.js";
+import { Breaker, InFlight, Spacer, TtlCache } from "./upstream.js";
 
 export type Weather = "sunny" | "cloudy" | "rain" | "snow" | "storm" | "fog";
 
@@ -36,32 +37,60 @@ export interface Attempt {
   status: number | null; // HTTP status, null if the request never got a response
   ms: number;
   detail: string; // what came back, or why it failed
+  skipped?: boolean; // true when the source was cooling down and no request was sent
 }
+
+const breakers = {
+  openMeteo: new Breaker("open-meteo"),
+  metNo: new Breaker("met.no"),
+  openMeteoGeo: new Breaker("open-meteo-geocoding"),
+  nominatim: new Breaker("nominatim"),
+};
+export const upstreamStatus = () => Object.fromEntries(Object.values(breakers).map((b) => [b.name, b.status()]));
+
+const WEATHER_TTL = 30 * 60_000; // a reading is good for 30 minutes per ~10 km square
+const FAILURE_TTL = 2 * 60_000; // after every source failed for a place, wait 2 minutes before trying again
+const weatherCache = new TtlCache<Reading>();
+const failureCache = new TtlCache<Attempt[]>();
+const weatherInFlight = new InFlight<{ reading: Reading | null; attempts: Attempt[] }>();
+const cellKey = (lat: number, lon: number) => `${lat.toFixed(1)},${lon.toFixed(1)}`;
 
 /**
  * Every forecast call goes through here and is logged as one line, e.g.
- * [weather] open-meteo 429 312ms lat=45.7 lon=11.9 FAIL "Too many requests"
+ * [weather] open-meteo 429 312ms lat=45.7 lon=11.9 FAIL "Daily API request limit exceeded"
  * Coordinates are rounded to ~10 km so the logs don't pinpoint anyone.
+ * If the source's breaker is open, nothing is sent at all.
  */
-async function call(source: string, url: string, lat: number, lon: number, parse: (data: any) => Reading | null, headers: Record<string, string> = {}): Promise<{ reading: Reading | null; attempt: Attempt }> {
+async function call(
+  breaker: Breaker, url: string, lat: number, lon: number, parse: (data: any) => Reading | null,
+): Promise<{ reading: Reading | null; attempt: Attempt }> {
+  const source = breaker.name;
+  if (breaker.isOpen()) {
+    return { reading: null, attempt: { source, ok: false, status: null, ms: 0, detail: `skipped: ${breaker.skipNote()}`, skipped: true } };
+  }
   const t0 = Date.now();
   let status: number | null = null;
   let reading: Reading | null = null;
   let detail = "";
+  let retryAfter: string | null = null;
+  let body = "";
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA, ...headers }, signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(5000) });
     status = res.status;
-    const text = await res.text();
+    retryAfter = res.headers.get("retry-after");
+    body = await res.text();
     if (!res.ok) {
-      detail = text.slice(0, 160).replace(/\s+/g, " ");
+      detail = body.slice(0, 160).replace(/\s+/g, " ");
     } else {
-      reading = parse(JSON.parse(text));
-      detail = reading ? `${reading.weather}${reading.temp !== null ? ` ${Math.round(reading.temp)}°C` : ""}` : `unexpected body: ${text.slice(0, 120)}`;
+      reading = parse(JSON.parse(body));
+      detail = reading ? `${reading.weather}${reading.temp !== null ? ` ${Math.round(reading.temp)}°C` : ""}` : `unexpected body: ${body.slice(0, 120)}`;
     }
   } catch (err) {
     const e = err as Error & { cause?: { code?: string } };
     detail = e.name === "TimeoutError" ? "timed out after 5s" : `${e.message}${e.cause?.code ? ` (${e.cause.code})` : ""}`;
   }
+  if (reading) breaker.success();
+  else breaker.failure(status, retryAfter, body);
   const attempt = { source, ok: !!reading, status, ms: Date.now() - t0, detail };
   console.log(`[weather] ${source} ${status ?? "---"} ${attempt.ms}ms lat=${lat.toFixed(1)} lon=${lon.toFixed(1)} ${attempt.ok ? "OK" : "FAIL"} ${JSON.stringify(detail)}`);
   return { reading, attempt };
@@ -70,7 +99,7 @@ async function call(source: string, url: string, lat: number, lon: number, parse
 /** Primary source: Open-Meteo (WMO codes). Shared hosting IPs can hit its rate limit. */
 function fromOpenMeteo(lat: number, lon: number) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}&current=temperature_2m,weather_code`;
-  return call("open-meteo", url, lat, lon, (data) => {
+  return call(breakers.openMeteo, url, lat, lon, (data) => {
     const code = data?.current?.weather_code;
     if (typeof code !== "number") return null;
     const temp = data.current.temperature_2m;
@@ -92,7 +121,7 @@ export function weatherFromSymbol(symbol: string): Weather {
 /** Fallback source: MET Norway Locationforecast (global coverage; needs a real User-Agent). */
 function fromMetNo(lat: number, lon: number) {
   const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
-  return call("met.no", url, lat, lon, (data) => {
+  return call(breakers.metNo, url, lat, lon, (data) => {
     const first = data?.properties?.timeseries?.[0]?.data;
     const symbol: string | undefined = first?.next_1_hours?.summary?.symbol_code ?? first?.next_6_hours?.summary?.symbol_code;
     if (!symbol) return null;
@@ -101,14 +130,31 @@ function fromMetNo(lat: number, lon: number) {
   });
 }
 
-async function fetchCurrent(lat: number, lon: number): Promise<{ reading: Reading | null; attempts: Attempt[] }> {
-  const a = await fromOpenMeteo(lat, lon);
-  if (a.reading) return { reading: a.reading, attempts: [a.attempt] };
-  const b = await fromMetNo(lat, lon);
-  return { reading: b.reading, attempts: [a.attempt, b.attempt] };
+/**
+ * Cached reading → recent total failure (no calls) → Open-Meteo → MET Norway.
+ * Identical requests arriving together share one upstream call.
+ */
+function fetchCurrent(lat: number, lon: number): Promise<{ reading: Reading | null; attempts: Attempt[] }> {
+  const key = cellKey(lat, lon);
+  const cached = weatherCache.get(key);
+  if (cached) return Promise.resolve({ reading: cached, attempts: [] });
+  const failed = failureCache.get(key);
+  if (failed) {
+    return Promise.resolve({ reading: null, attempts: failed });
+  }
+  return weatherInFlight.run(key, async () => {
+    const a = await fromOpenMeteo(lat, lon);
+    const result = a.reading ? { reading: a.reading, attempts: [a.attempt] } : await (async () => {
+      const b = await fromMetNo(lat, lon);
+      return { reading: b.reading, attempts: [a.attempt, b.attempt] };
+    })();
+    if (result.reading) weatherCache.set(key, result.reading, WEATHER_TTL);
+    else failureCache.set(key, result.attempts, FAILURE_TTL);
+    return result;
+  });
 }
 
-/** Diagnostics: asks every source, even if the first one works. */
+/** Diagnostics: asks every source that isn't cooling down, skipping the caches. */
 export async function checkSources(lat: number, lon: number): Promise<Attempt[]> {
   const [a, b] = await Promise.all([fromOpenMeteo(lat, lon), fromMetNo(lat, lon)]);
   return [a.attempt, b.attempt];
@@ -116,67 +162,84 @@ export async function checkSources(lat: number, lon: number): Promise<Attempt[]>
 
 type Place = { name: string; region: string; country: string; lat: number; lon: number };
 
-async function searchOpenMeteo(q: string): Promise<Place[] | null> {
-  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`;
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
-    if (!res.ok) {
-      console.warn(`open-meteo geocoding: HTTP ${res.status}`);
-      return null;
-    }
-    const data = (await res.json()) as { results?: any[] };
-    return (data.results ?? []).map((r) => ({
-      name: String(r.name), region: r.admin1 ? String(r.admin1) : "", country: r.country ? String(r.country) : "",
-      lat: Number(r.latitude), lon: Number(r.longitude),
-    }));
-  } catch (err) {
-    console.warn("open-meteo geocoding failed:", (err as Error).message);
+const searchCache = new TtlCache<Place[]>();
+const nameCache = new TtlCache<string | null>();
+const nominatimGap = new Spacer(1100); // Nominatim policy: at most 1 request per second
+
+/** Geocoding helper with the same breaker rules as the forecasts. */
+async function getJson(breaker: Breaker, url: string): Promise<any | null> {
+  if (breaker.isOpen()) {
+    breaker.skipNote();
     return null;
   }
+  let status: number | null = null;
+  let retryAfter: string | null = null;
+  let body = "";
+  try {
+    if (breaker === breakers.nominatim) await nominatimGap.wait();
+    const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(5000) });
+    status = res.status;
+    retryAfter = res.headers.get("retry-after");
+    body = await res.text();
+    if (res.ok) {
+      const data = JSON.parse(body);
+      breaker.success();
+      return data;
+    }
+  } catch (err) {
+    body = (err as Error).message;
+  }
+  breaker.failure(status, retryAfter, body);
+  console.warn(`[geo] ${breaker.name} ${status ?? "---"} FAIL ${JSON.stringify(body.slice(0, 120))}`);
+  return null;
+}
+
+async function searchOpenMeteo(q: string): Promise<Place[] | null> {
+  const data = await getJson(breakers.openMeteoGeo, `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`);
+  if (!data) return null;
+  return ((data.results ?? []) as any[]).map((r) => ({
+    name: String(r.name), region: r.admin1 ? String(r.admin1) : "", country: r.country ? String(r.country) : "",
+    lat: Number(r.latitude), lon: Number(r.longitude),
+  }));
 }
 
 /** Fallback geocoder: OpenStreetMap Nominatim (light personal use is within its policy). */
-async function searchNominatim(q: string): Promise<Place[]> {
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=jsonv2&limit=6&addressdetails=1&accept-language=en&featureType=city`;
-  try {
-    const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(5000) });
-    if (!res.ok) {
-      console.warn(`nominatim search: HTTP ${res.status}`);
-      return [];
-    }
-    const data = (await res.json()) as any[];
-    return data.map((r) => {
-      const a = r.address ?? {};
-      return {
-        name: String(a.city ?? a.town ?? a.village ?? a.municipality ?? r.name ?? String(r.display_name).split(",")[0]),
-        region: String(a.state ?? a.region ?? ""), country: String(a.country ?? ""),
-        lat: Number(r.lat), lon: Number(r.lon),
-      };
-    });
-  } catch (err) {
-    console.warn("nominatim search failed:", (err as Error).message);
-    return [];
-  }
+async function searchNominatim(q: string): Promise<Place[] | null> {
+  const data = await getJson(breakers.nominatim, `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=jsonv2&limit=6&addressdetails=1&accept-language=en&featureType=city`);
+  if (!Array.isArray(data)) return null;
+  return data.map((r: any) => {
+    const a = r.address ?? {};
+    return {
+      name: String(a.city ?? a.town ?? a.village ?? a.municipality ?? r.name ?? String(r.display_name).split(",")[0]),
+      region: String(a.state ?? a.region ?? ""), country: String(a.country ?? ""),
+      lat: Number(r.lat), lon: Number(r.lon),
+    };
+  });
 }
 
+/** City search, cached for a day per query so the same search never hits the network twice. */
 export async function searchPlaces(q: string): Promise<Place[]> {
-  const primary = await searchOpenMeteo(q);
-  if (primary && primary.length) return primary;
-  return searchNominatim(q);
+  const key = q.trim().toLowerCase();
+  const cached = searchCache.get(key);
+  if (cached) return cached;
+  let results = await searchOpenMeteo(q);
+  if (!results || results.length === 0) results = (await searchNominatim(q)) ?? results;
+  if (results) searchCache.set(key, results, 24 * 3600_000);
+  return results ?? [];
 }
 
 /** Names the town for a shared GPS position, so the map says "Castelfranco Veneto" rather than "Your location". */
 export async function placeName(lat: number, lon: number): Promise<string | null> {
-  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&format=jsonv2&zoom=10&accept-language=en`;
-  try {
-    const res = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(4000) });
-    if (!res.ok) return null;
-    const a = ((await res.json()) as any)?.address ?? {};
-    const name = a.city ?? a.town ?? a.village ?? a.municipality ?? a.county;
-    return name ? String(name).slice(0, 60) : null;
-  } catch {
-    return null;
-  }
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  const cached = nameCache.get(key);
+  if (cached !== undefined) return cached;
+  const data = await getJson(breakers.nominatim, `https://nominatim.openstreetmap.org/reverse?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&format=jsonv2&zoom=10&accept-language=en`);
+  if (!data) return null; // not cached: a later try may succeed
+  const a = data.address ?? {};
+  const name = a.city ?? a.town ?? a.village ?? a.municipality ?? a.county;
+  const result = name ? String(name).slice(0, 60) : null;
+  nameCache.set(key, result, 24 * 3600_000);
+  return result;
 }
 
 export interface DailyEvent {
@@ -200,7 +263,7 @@ async function lookup(lat: number, lon: number): Promise<{ reading: Reading | nu
 }
 
 const summarise = (attempts: Attempt[]) =>
-  attempts.map((a) => `${a.source}: ${a.status ? `HTTP ${a.status}` : "no response"}${a.detail ? ` (${a.detail.slice(0, 60)})` : ""}`).join(" · ");
+  attempts.map((a) => `${a.source}: ${a.skipped ? a.detail : `${a.status ? `HTTP ${a.status}` : "no response"}${a.detail ? ` (${a.detail.slice(0, 60)})` : ""}`}`).join(" · ");
 
 /**
  * The day's weather is fetched once for your location and then locked,

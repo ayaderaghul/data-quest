@@ -13,7 +13,7 @@ Clear every block to face the chapter boss and win a piece of noble gear. Gems a
 Random events keep it interesting:
 
 - **Live weather** (Open-Meteo, locked once per day): sunny +10% gold, cloudy +10% XP, rain drops bonus gems, fog doubles quiz gems but disables hints, snow brings a review challenge, storms bring a timed challenge.
-- **Your sky, or any sky**: the game asks for your location (or a city) before fetching weather. Teleport to any city to play under its weather: the first teleport each day is free, then 25 gold. Weather comes from Open-Meteo with MET Norway as a fallback; city search falls back to OpenStreetMap Nominatim.
+- **Your sky, or any sky**: the game asks for your location (or a city) before fetching weather. Teleport to any city to play under its weather: the first teleport each day is free, then 25 gold. Weather comes from Open-Meteo with MET Norway as a fallback; city search falls back to OpenStreetMap Nominatim. Every source sits behind a circuit breaker (`src/game/upstream.ts`): a daily-quota 429 waits until 00:05 UTC, Retry-After is honoured, 401/403 waits 6 hours, other failures back off 1→2→4…30 minutes, and nothing is sent while a breaker is open. Readings are cached for 30 minutes per ~10 km square, a place where every source just failed isn't retried for 2 minutes, simultaneous identical requests share one call, and Nominatim is held to 1 request per second.
 - **Moon calendar**: at full moon a wolf gives a 5-question shortcut test (pick the memory anchor that cracks each question; big rewards). At new moon a fairy gives a step-ordering puzzle and a proverb (mostly Italian).
 - **Wild encounters** on the map: mystics (riddles), beasts (3-question fights), wandering elves (gem trades) and rival knights (speed duels).
 
@@ -59,6 +59,7 @@ npm run check                                   # validates content and prerequi
 INVITE=DQ-... node test/smoke.mjs               # end-to-end test against a running server (fresh DB)
 node test/moon.mjs                              # location, teleport, wolf (server with DEV_MOON=full)
 MODE=new node test/moon.mjs                     # fairy (server with DEV_MOON=new)
+node test/upstream.mjs                          # back-off rules for the weather and geocoding APIs
 ```
 
 ## Adding chapters
