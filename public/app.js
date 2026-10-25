@@ -1,4 +1,5 @@
 // Data Quest — 8-bit DDIA study game. Vanilla JS, hash routing, no build step.
+import { sfx } from "./sfx.js";
 
 const $app = document.getElementById("app");
 const $toast = document.getElementById("toast");
@@ -280,6 +281,7 @@ async function screenMap() {
   }).join("");
 
   const enc = st.encounter;
+  announce(st, enc);
   const encCard = enc ? `<a href="#/enc" class="px pulse" style="display:flex;gap:12px;align-items:center;text-decoration:none;color:var(--ink);background:#3b2440">
       ${enc.kind === "beast" ? beastSvg(64) : enc.kind === "mystic" ? mysticSvg(36) : enc.kind === "elf" ? elfSvg(32) : knightSvg(enc.rival?.colour || "#888", 32)}
       <div class="grow"><div class="label" style="color:#ffb3c7">WILD ENCOUNTER</div><div style="font-size:21px">${esc(enc.name)} appears!</div></div><span class="pf" style="font-size:10px;color:var(--gold)">▶</span></a>` : "";
@@ -403,6 +405,7 @@ async function screenTravel() {
       const r = results[Number(b.dataset.i)];
       try {
         const out = await api("/api/location", { lat: r.lat, lon: r.lon, name: r.name, mode: "teleport" });
+        sfx.teleport();
         toast(`Teleported to ${r.name}: ${out.weather.label}${out.cost ? ` (−${out.cost} gold)` : ""}`);
         location.hash = "#/";
       } catch (err) { toast(err.message); }
@@ -462,7 +465,7 @@ async function screenMoon(offset = 0) {
   document.getElementById("prev").addEventListener("click", () => screenMoon(offset - 1));
   document.getElementById("next").addEventListener("click", () => screenMoon(offset + 1));
   const wb = document.getElementById("wolf");
-  if (wb) wb.addEventListener("click", () => startRun({ kind: "wolf" }));
+  if (wb) wb.addEventListener("click", () => { sfx.howl(); startRun({ kind: "wolf" }); });
   if (m.fairy) bindFairy(m.fairy);
 }
 
@@ -503,7 +506,8 @@ function bindFairy(f) {
   offer.addEventListener("click", async () => {
     try {
       const r = await api("/api/fairy", { order });
-      if (r.solved || r.proverb) { screenMoon(); if (r.reward) toast("The fairy smiles. Rewards granted!"); return; }
+      if (r.solved || r.proverb) { if (r.solved) sfx.magic(); else sfx.lose(); screenMoon(); if (r.reward) toast("The fairy smiles. Rewards granted!"); return; }
+      sfx.wrong();
       document.getElementById("fout").innerHTML = `<div class="why">${r.inPlace} of ${r.total} steps are in the right place. ${r.triesLeft} ${r.triesLeft === 1 ? "try" : "tries"} left.</div>`;
       order.length = 0;
       draw();
@@ -626,6 +630,7 @@ async function screenScenario(id) {
     try {
       const r = await api(`/api/blocks/${b.id}/scenario`, { choice: Number(btn.dataset.i) });
       btn.classList.add(r.correct ? "correct" : "wrong");
+      if (r.correct) { sfx.correct(); if (r.reward && (r.reward.scenario || r.reward.fundamental || r.reward.quiz)) setTimeout(() => sfx.gem(), 250); } else sfx.wrong();
       document.getElementById("out").innerHTML = `<div class="why">${esc(r.feedback)}</div>${rewardBox(r.reward)}
         ${r.correct ? `<a class="btn" href="#/b/${b.id}">CONTINUE ▶</a>` : `<button class="btn ghost" id="retry">TRY AGAIN</button>`}`;
       const retry = document.getElementById("retry");
@@ -729,6 +734,7 @@ async function screenRun(id) {
       const s = (Date.now() - started) / 1000;
       if (r.kind === "storm") {
         const left = Math.max(0, Math.ceil((r.seconds || 90) - s));
+        if (left <= 10 && left > 0 && clock.textContent !== String(left)) sfx.tick();
         clock.textContent = String(left);
         clock.style.color = left <= 10 ? "var(--red)" : "var(--gold)";
       } else clock.textContent = `${s.toFixed(1)}s`;
@@ -740,6 +746,7 @@ async function screenRun(id) {
   if (hintBtn) hintBtn.addEventListener("click", async () => {
     try {
       const { removed } = await api(`/api/runs/${id}/hint`, {});
+      sfx.hint();
       const el = document.querySelector(`#opts button[data-i="${removed}"]`);
       if (el) { el.classList.add("removed"); el.disabled = true; }
       hintBtn.remove();
@@ -763,6 +770,7 @@ async function screenRun(id) {
     if (timer) clearInterval(timer);
     all[res.correctPos].classList.add("correct");
     if (!res.correct) btn.classList.add("wrong");
+    playOutcome(res);
     let html = "";
     if (res.timedOut) html += `<div class="why">Too slow! The storm swallowed that answer.</div>`;
     html += `<div class="why"><span class="label" style="color:${res.correct ? "var(--green)" : "var(--red)"}">${res.correct ? "CORRECT · " : "NOT QUITE · "}WHY</span><br>${esc(res.why)}</div>`;
@@ -827,11 +835,17 @@ async function screenHero() {
       <div class="row" style="justify-content:space-between"><div class="label">GEM SHOP</div><a class="pf" style="font-size:9px" href="#/mint">ROYAL MINT ▶</a></div>
       <div class="list">${d.shop.map((s) => `<div class="card row"><div class="grow"><div style="font-size:20px">${esc(s.name)}</div><div class="tiny muted">${esc(s.desc)}</div></div>
         ${s.owned ? `<span class="pf" style="font-size:9px;color:var(--green)">OWNED</span>` : `<button class="btn small" data-buy="${esc(s.id)}">${s.price} ●</button>`}</div>`).join("")}</div>
+      <button class="btn ghost small" id="sound" aria-pressed="${sfx.enabled}">${sfx.enabled ? "♪ SOUND: ON" : "♪ SOUND: OFF"}</button>
       <button class="btn ghost small" id="logout">SIGN OUT</button>
     </div>${nav("hero")}</main>`;
   $app.querySelectorAll("[data-buy]").forEach((b) => b.addEventListener("click", async () => {
-    try { await api("/api/shop/buy", { item: b.dataset.buy }); toast("Purchased!"); route(); } catch (err) { toast(err.message); }
+    try { await api("/api/shop/buy", { item: b.dataset.buy }); sfx.coins(3); toast("Purchased!"); route(); } catch (err) { toast(err.message); }
   }));
+  document.getElementById("sound").addEventListener("click", (e) => {
+    sfx.setEnabled(!sfx.enabled);
+    e.currentTarget.textContent = sfx.enabled ? "♪ SOUND: ON" : "♪ SOUND: OFF";
+    e.currentTarget.setAttribute("aria-pressed", String(sfx.enabled));
+  });
   document.getElementById("logout").addEventListener("click", async () => { await api("/api/auth/logout", {}); location.hash = "#/login"; });
 }
 
@@ -883,6 +897,7 @@ async function screenMint() {
     document.getElementById("mint").addEventListener("click", async () => {
       try {
         const r = await api("/api/mint", amt);
+        sfx.coins(Math.min(8, 2 + Math.round(r.gold / 100)));
         toast(`Minted ${fmt(r.gold)} gold!`);
         route();
       } catch (err) { toast(err.message); }
@@ -978,11 +993,43 @@ async function screenEncounter() {
     try {
       const r = await api(`/api/encounter/${e.id}`, { action: b.dataset.act });
       if (r.runId) { location.hash = `#/r/${r.runId}`; return; }
-      if (r.reward) toast("Trade complete!");
+      if (r.reward) { sfx.gem(); toast("Trade complete!"); }
       location.hash = "#/";
     } catch (err) { toast(err.message); }
   }));
 }
+
+// ---------- sounds ----------
+function playOutcome(res) {
+  if (res.finished) {
+    const gained = res.reward && (res.reward.fundamental || res.reward.scenario || res.reward.quiz);
+    if (res.outcome === "win") { sfx.win(); if (gained) setTimeout(() => sfx.gem(), 700); }
+    else if (res.outcome === "lose") sfx.lose();
+    else sfx.correct();
+  } else if (res.correct) sfx.correct();
+  else sfx.wrong();
+}
+
+let lastEncounter = null;
+function announce(st, enc) {
+  if (enc && enc.id !== lastEncounter) setTimeout(() => sfx.encounter(), 150);
+  lastEncounter = enc ? enc.id : null;
+  // Level-up fanfare when the hero has climbed since the last visit to the map.
+  let seen = 0, seenRank = "";
+  try { seen = Number(localStorage.getItem("dq-level") || 0); seenRank = localStorage.getItem("dq-rank") || ""; } catch { /* ignore */ }
+  if (seen && st.hero.level > seen) {
+    setTimeout(() => sfx.levelUp(), 200);
+    toast(`Level up! You are now level ${st.hero.level}${seenRank && st.hero.rank !== seenRank ? `: ${st.hero.rank}!` : "."}`);
+  }
+  try { localStorage.setItem("dq-level", String(st.hero.level)); localStorage.setItem("dq-rank", st.hero.rank); } catch { /* ignore */ }
+}
+
+// A soft blip for buttons and links; answer buttons get their own sounds instead.
+document.addEventListener("pointerdown", (e) => {
+  sfx.unlock();
+  const el = e.target.closest("button, a.btn, a.node, a.block-node, .nav a");
+  if (el && !el.closest("#opts, #choices") && !el.disabled) sfx.tap();
+}, { capture: true });
 
 // ---------- router ----------
 async function route() {

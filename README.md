@@ -15,6 +15,7 @@ Random events keep it interesting:
 - **Live weather** (Open-Meteo, locked once per day): sunny +10% gold, cloudy +10% XP, rain drops bonus gems, fog doubles quiz gems but disables hints, snow brings a review challenge, storms bring a timed challenge.
 - **Your sky, or any sky**: the game asks for your location (or a city) before fetching weather. Teleport to any city to play under its weather: the first teleport each day is free, then 25 gold.
 - **Moon calendar**: at full moon a wolf gives a 5-question shortcut test (pick the memory anchor that cracks each question; big rewards). At new moon a fairy gives a step-ordering puzzle and a proverb (mostly Italian).
+- **8-bit sound effects** (`public/sfx.js`), synthesised live with the Web Audio API: no audio files, nothing fetched. Answers, gems, minting coins, level-ups, wins and losses, encounters, the wolf's howl, the fairy's magic, storm countdown ticks. Mute it on the Hero screen.
 - **Wild encounters** on the map: mystics (riddles), beasts (3-question fights), wandering elves (gem trades) and rival knights (speed duels).
 
 All 12 chapters are playable: 63 building blocks, each with a card, a recall check, a 3-question quiz and a scenario, plus a boss per chapter.
